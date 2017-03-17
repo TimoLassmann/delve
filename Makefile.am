@@ -4,5 +4,5 @@ LIB_TLDEVELDIR = @LIB_TLDEVELDIR@
 
 # top_builddir = @top_builddir@
 
-SUBDIRS = libinc libtldevel src
+SUBDIRS = libtldevel src
 

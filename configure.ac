@@ -2,7 +2,7 @@ AC_INIT([delve2], [m4_esyscmd_s([git describe --always])])
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE
 AC_PROG_CC
-AC_CONFIG_FILES([libinc/Makefile  Makefile src/Makefile])
+AC_CONFIG_FILES([Makefile src/Makefile])
 
 AC_CHECK_HEADERS([stdlib.h])
 
