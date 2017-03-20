@@ -10,7 +10,7 @@ MYLIBDIRS = -L${top_builddir}/${LIB_TLDEVELDIR}
 MYINCDIRS = -I${top_builddir}/${LIB_TLDEVELDIR} \
             -I${top_srcdir}/${LIB_TLDEVELDIR}
 
-LIBS = -lm -ltldevel
+LIBS = -lm -ltldevel -lhtsglue -lhts
 
 
 AM_CPPFLAGS=${MYINCDIRS} 
