@@ -9,10 +9,10 @@
 
 
 #include "tldevel.h"
+#include "rbtree.h"
 #include "htsglue.h"
 #include  <ctype.h>
-
-
+#include "rtr.h"
 #include "delve.h"
 
 #define OPT_NTHREAD 1
@@ -28,7 +28,7 @@ struct parameters{
 	int num_threads;
 };
 
-
+struct rtr_data* build_rtree(struct sam_bam_file* sb_file );
 
 int add_genome_sequences(struct sam_bam_file* sb_file,struct genome_sequences** gc, char* genome);
 
@@ -156,7 +156,7 @@ ERROR:
 int run_delve(struct parameters* param)
 {
 	struct sam_bam_file* sb_file = NULL;
-	
+	struct rtr_data* rtree = NULL;
 	struct hmm* hmm = NULL;
 
 	struct genome_sequences** gc = NULL; 
@@ -190,8 +190,9 @@ int run_delve(struct parameters* param)
 	//		DPRINTF2("%d %d %p",i,j,sb_file->buffer[i]->genomic_sequences[j] );
 	//	}
 	//}
-	
-	
+	tlog.log_message("Quantifying read depth at putatitve mapping locations.");
+	RUNP(rtree =  build_rtree(sb_file) );
+	exit(0);
 	tlog.log_message("Estimating Random model...");
 	
 	
@@ -204,7 +205,7 @@ int run_delve(struct parameters* param)
 	for(i = 0; i < sb_file->num_read;i++){
 		//RUN(ACGT_to_0123(sb_file->buffer[i]->sequence,&sb_file->buffer[i]->len  ),"ACGT to 0123 failed");
 		for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
-			DPRINTF2("%d %d %p",i,j,sb_file->buffer[i]->genomic_sequences[j] );
+//			DPRINTF2("%d %d %p",i,j,sb_file->buffer[i]->genomic_sequences[j] );
 		}
 	}
 	//total_numseq = 0;
@@ -272,6 +273,49 @@ ERROR:
 	return FAIL;
 }
 
+
+struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
+{
+	struct rtr_data* rtree = NULL;
+
+	int64_t* val = NULL;
+	int i,j;
+	int32_t id = 0;
+
+	MMALLOC(val,sizeof(int64_t)*2);
+	RUNP(rtree = init_rtr_data(1 , 5 ,sb_file->buffer_size ));
+	while(1){
+		RUN(read_SAMBAM_chunk(sb_file,1,0));
+		//DPRINTF2("read:%d",sb_file->num_read );
+		//RUN(read_sam_bam_chunk(infile,data->si, buffer,1,&numseq),"Read sam/bam chunk in thread %d failed", data->threadID);
+		//if((status = read_sam_bam_chunk(infile,data->si, buffer,1,&numseq)) != kslOK)  exit(status);
+		if(!sb_file->num_read){
+			break;
+		}
+		tlog.log_message("read:%d",sb_file->num_read);
+		for (i = 0; i < sb_file->num_read; i++) {
+			for (j=0; j < sb_file->buffer[i]->num_hits ; j++) {
+				val[0] = sb_file->buffer[i]->start[j];
+				val[1] = sb_file->buffer[i]->stop[j];
+				rtree->insert(rtree,val,id,1,1);
+			}
+			
+		}
+        }
+	MFREE(val);
+	RUN(rtree->flatten_rtree(rtree));
+	RUN(rtree->print_rtree(rtree, rtree->root));
+	for (i = 0; i < rtree->stats_num_interval; i++) {
+//		fprintf(stdout,"%d\n", rtree->flat_interval[i]->count);
+	}
+	return rtree;
+ERROR:
+	MFREE(val);
+	if(rtree){
+		rtree->free(rtree);
+	}
+	return NULL;
+}
 
 int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout)
 {
@@ -400,7 +444,7 @@ void* do_baum_welch_thread(void *threadarg)
 				//DPRINTF2("%s: %d ->%d", data->sb_file->buffer[i]->name,data->sb_file->buffer[i]->start[hit],data->sb_file->buffer[i]->stop[hit] );
 				
 			//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
-				DPRINTF2("%d hit %d	%p\n",i,c, data->sb_file->buffer[i]->genomic_sequences[c]);
+				//		DPRINTF2("%d hit %d	%p\n",i,c, data->sb_file->buffer[i]->genomic_sequences[c]);
 				//genomic_sequence = data->sb_file->buffer[i]->sequence[c];// get_sequence(data->index,g_int);
 				//len =   data->sb_file->buffer[i]->len[c];
 
@@ -2980,13 +3024,15 @@ int add_genome_sequences(struct sam_bam_file* sb_file,struct genome_sequences** 
 {
 	faidx_t*  index = NULL;
 
-	RUNP(index = get_faidx(genome));
 	
 	struct genome_interval* g_int = NULL;
-	RUNP(g_int = init_genome_interval(0,0,0));
+
 	int i,j,len,c;
 	
 	int len_a,len_b,len_c;
+	RUNP(index = get_faidx(genome));
+	RUNP(g_int = init_genome_interval(0,0,0));	
+
 	
 	for(i = 0; i < sb_file->num_read;i++){
 		for(j = 0; j < sb_file->buffer[i]->num_hits;j++){

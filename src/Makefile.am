@@ -5,20 +5,24 @@ LIB_TLDEVELDIR = @LIB_TLDEVELDIR@
 
 
 
-MYLIBDIRS = -L${top_builddir}/${LIB_TLDEVELDIR} 
+# MYLIBDIRS = -L${top_builddir}/${LIB_TLDEVELDIR} 
+
+
+MYLIBDIRS = ../libtldevel/libhtsglue.a  ../libtldevel/librtree.a  ../libtldevel/libthrpool.a  ../libtldevel/libtldevel.a
 
 MYINCDIRS = -I${top_builddir}/${LIB_TLDEVELDIR} \
             -I${top_srcdir}/${LIB_TLDEVELDIR}
 
-LIBS = -lm -ltldevel -lhtsglue -lhts
+LIBS = -lm -lpthread -lhts  
 
 
 AM_CPPFLAGS=${MYINCDIRS} 
 
-bin_PROGRAMS = arm delve
+bin_PROGRAMS =  delve bedsim
 
-arm_SOURCES = arm.c
-arm_LDADD = ${MYLIBDIRS}
+bedsim_SOURCES = \
+bedsim.c 
+bedsim_LDADD =  ${MYLIBDIRS}
 
 
 delve_SOURCES = \
