@@ -1,24 +1,25 @@
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <string.h>
 #include <inttypes.h>
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#include  <ctype.h>
 
 #include "tldevel.h"
 #include "rbtree.h"
 #include "htsglue.h"
 #include "thr_pool.h"
-#include  <ctype.h>
 #include "rtr.h"
 #include "pwrite.h"
 #include "delve.h"
 
 #define OPT_NTHREAD 1
 #define OPT_OUT 2
-
 
 struct parameters{
 	char** infiles;
@@ -57,8 +58,6 @@ struct thread_data{
 	struct shared_data* bsd;
 	int thread_id;
 };
-	
-
 
 static pthread_mutex_t avail_mtx;
 
@@ -72,6 +71,9 @@ struct thread_data** init_thread_data(struct shared_data* bsd,int num_threads);
 void free_thread_data(struct thread_data** td,int num_threads);
 
 struct rtr_data* build_rtree(struct sam_bam_file* sb_file );
+int set_sequence_weigth(struct shared_data* bsd);
+
+
 int add_genome_sequences(struct shared_data* bsd);
 
 //int add_genome_sequences(struct sam_bam_file* sb_file,char* genome);
@@ -98,15 +100,11 @@ int convert_buffer_ACGT_to_0123(struct sam_bam_file* sb_file);
 int write_sam_header(struct sam_bam_file* sb_file,FILE* out);
 
 int main (int argc,char *argv[]) 
-{	
-	
+{		
 	struct parameters* param = NULL;
 	int i,c;
-
 	tlog.echo_build_config();
-       
-	MMALLOC(param, sizeof(struct parameters));
-
+     	MMALLOC(param, sizeof(struct parameters));
 	param->infiles = NULL;
 	param->genome = NULL;
 	param->aln_infile = NULL;
@@ -199,8 +197,6 @@ ERROR:
 int run_delve(struct parameters* param)
 {
 	struct shared_data* bsd = NULL;
-	struct hmm* hmm = NULL;
-	int iter;
 	
 	int buffer_size = MAXNUMQUERY;	
 	
@@ -216,6 +212,8 @@ int run_delve(struct parameters* param)
         LOG_MSG("Quantifying read depth at pu1tatitve mapping locations.");
 	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits , 0,0));
 	RUNP(bsd->rtree =  build_rtree(bsd->sb_file));
+
+
 	
 	/* assign max_seq_len */
 	RUN(get_max_seq_len_from_sb_buffer(bsd->sb_file,&bsd->max_seq_len));
@@ -223,44 +221,35 @@ int run_delve(struct parameters* param)
 	RUN(close_SAMBAMfile(bsd->sb_file));
 
 	/* init all HMMs; now that I have the max_seq_len... */
-	
+        /* allocate HMMs... */
+	RUN(init_shared_data_hmms(bsd));
 	
 	/* 2. build model 
 	   Here I read in the first X (MAXNUMQUERY sequences and re-use them for model building 
 	   etc. I.e. I open, read and only after all models are trained I close....
 	*/
 	/* open file again - read all alignments (param "1","0") */
+	LOG_MSG("Opening alignment file...");
 	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
-     	/* Alloc space for genomic sequences.. */
-	//RUNP(gc = init_genome_sequences(buffer_size,sb_file->max_num_hits));
-
-	/* Load index of genome  */
-	//RUNP(index = get_faidx(param->genome));
-	
-        
-	/* start reading first NMAXNUMQUERY alignments...  */
-        LOG_MSG("Opening alignment file...");
-	
-	RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
-	/* By default sequences will be human readable - need to transform into 01234...  */
+     	RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
 	RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
 	/* Retrieve all genome sequences "hit" by reads in the first SAM/BAM chunk
 	   Note: add_genome_sequences, specific to delve (not a library function) will convert the sequences to 0123... 
 	 */
 	RUN(add_genome_sequences(bsd));
 
-	/* allocate HMMs... */
-
-	RUN(init_shared_data_hmms(bsd));
-
+	/* set weigth of allocated sequences */
+	RUN(set_sequence_weigth(bsd));
+	exit(0);
 	
 	/* Estimate random models  */
 	LOG_MSG("Estimating Random model (%d)",bsd->sb_file->num_read);
-//	RUN(run_estimate_random_models(bsd));
+	RUN(run_estimate_random_models(bsd));
         LOG_MSG("done");
-	
+
+	/* Estmate Sequence Model  */
 	LOG_MSG("Estimating Sequence model...");
-//	RUN(run_estimate_sequence_model(bsd));
+	RUN(run_estimate_sequence_model(bsd));
         RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
      	RUN(close_SAMBAMfile(bsd->sb_file));
 	LOG_MSG("done");	
@@ -343,7 +332,7 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 	int status;
 	int iterations;
 
-	iterations = 1;
+	iterations = 3;
 	num_threads = bsd->param->num_threads;
 	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
@@ -458,7 +447,8 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 	int64_t* val = NULL;
 	int i,j;
 	int32_t id = 1;
-
+	int32_t sum = 0;
+	
 	MMALLOC(val,sizeof(int64_t)*2);
 	RUNP(rtree = init_rtr_data(1 , 5 ,sb_file->buffer_size ));
 	while(1){
@@ -476,7 +466,6 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 			for (j=0; j < sb_file->buffer[i]->num_hits ; j++) {
 				val[0] = sb_file->buffer[i]->start[j];
 				val[1] = sb_file->buffer[i]->stop[j];
-				fprintf(stdout,"inserting: %" PRId64 " %" PRId64 "\n",val[0],val[1]);
 				rtree->insert(rtree,val,id,1,1);
 				id++;
 			}
@@ -486,8 +475,18 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 	RUN(rtree->flatten_rtree(rtree));
 	RUN(rtree->print_rtree(rtree, rtree->root));
 	for (i = 0; i < rtree->stats_num_interval; i++) {
+		sum += rtree->flat_interval[i]->count; 
 		fprintf(stdout,"%d\n", rtree->flat_interval[i]->count);
 	}
+	LOG_MSG("total positions hit: %d\n",sum);
+
+	for (i = 0; i < rtree->stats_num_interval; i++) {
+		sum += rtree->flat_interval[i]->count; 
+		fprintf(stdout,"%d\t%f\t%f\n",rtree->flat_interval[i]->count,log((double) rtree->flat_interval[i]->count), log((double) rtree->flat_interval[i]->count)   / (double) rtree->flat_interval[i]->count);
+	}
+	LOG_MSG("total positions hit: %d\n",sum);
+	
+	
 	return rtree;
 ERROR:
 	MFREE(val);
@@ -495,6 +494,56 @@ ERROR:
 		rtree->free(rtree);
 	}
 	return NULL;
+}
+
+
+int set_sequence_weigth(struct shared_data* bsd)
+{
+	int64_t* val = NULL;
+	struct sam_bam_entry** buffer = NULL;
+	struct rtr_data* rtree = NULL;
+	int i,j;
+	int num_seq; 
+	int32_t count,id,sum;
+	float weigth = 0.0;
+	float tmp;
+	
+	ASSERT(bsd != NULL,"No shared data found.");
+
+	num_seq = bsd->sb_file->num_read;
+	buffer = bsd->sb_file->buffer;
+	rtree = bsd->rtree;
+	
+	sum = 0;
+	for (i = 0; i < rtree->stats_num_interval; i++) {
+		sum = sum + rtree->flat_interval[i]->count; 
+	}
+	LOG_MSG("total positions hit: %d\n",sum);
+
+	MMALLOC(val,sizeof(int64_t)*2);
+	
+	for (i = 0; i < num_seq; i++) {
+		weigth = 0.0;
+		for (j = 0; j < buffer[i]->num_hits ; j++) {
+			val[0] = buffer[i]->start[j];
+			val[1] = buffer[i]->stop[j];
+			// int query(struct rtr_data* rtrd , int64_t* val,int32_t* identifier,int32_t* count)
+			RUN(rtree->query(rtree,val,&id,&count));
+			tmp =  log((float) count) / (float) count;
+			if(tmp > weigth){
+				weigth = tmp;
+			}
+			if(i % 1000 == 99){
+				fprintf(stdout,"%lld-%lld id:%d, count:%d (%d) w:%f %f\n",val[0],val[1],id,count,sum,weigth , prob2scaledprob(weigth));
+			}
+		}
+	}
+	MFREE(val);
+	return OK;
+ERROR:
+	
+	MFREE(val);
+	return FAIL;
 }
 
 /* int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout)
@@ -675,7 +724,7 @@ void* do_baum_welch_thread(void *threadarg)
 	int thread_id = -1;
 	int num_threads = 0;
 	int num_sequences = 0;
-	int i,hit;
+	int i;
 	int start;
 	int stop;
 	int max_num_hits  = 0;
@@ -769,7 +818,6 @@ void* do_baum_welch_thread(void *threadarg)
 			//}
 			max2= prob2scaledprob(0.0);
 			max = prob2scaledprob(0.0);
-			int best  = -1;
 			for(c = 0; c < buffer[i]->num_hits;c++){
 				//for(c = 0; c <  LIST_STORE_SIZE+1;c++){
 				//	if(ri[i]->identity[c] >= 0.0f){
@@ -777,7 +825,6 @@ void* do_baum_welch_thread(void *threadarg)
 				if(scores[c] >= max){
 					max2 = max;
 					max = scores[c];
-					best  = c;
 				}else{
 					if(scores[c] >= max2){
 						max2 = scores[c];
@@ -833,7 +880,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	int num_threads = 0;
 	int num_sequences = 0;
 	int max_num_hits = 0;
-	int i,hit;
+	int i;
 	int start,stop;
 	
 	data = (struct thread_data *) threadarg;
@@ -942,10 +989,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 				sum = logsum(sum,scores[c]);
 			}
 			unaligned = unaligned - sum;
-			
-			
-			
-			
+
 			max = prob2scaledprob(0.0);
 			
 			k = 1;
@@ -1430,13 +1474,17 @@ struct hmm* glocal_forward_log_Y(struct hmm* hmm, char* a,  char* b, int n,int m
 {
 	//init - terminal gap penalty = 0 (p = 1)
 	ASSERT(n > 10, "read too short ");
-	ASSERT(m> 10, " genome seq too short");
+	ASSERT(m > 10, " genome seq too short");
 	
 	int i,j;//,c;
 	float** M = 0;
-	//float** C = hmm->fC;
 	float** X = 0;
 	float** Y = 0;
+	
+	char* seqa = a -1;
+	char* seqb = b -1;
+	float* prob = hmm->prob;
+
 	
 	for(j = 0; j < n;j++){
 		ASSERT(a[j] < 5,"problem in a");
@@ -1459,10 +1507,6 @@ struct hmm* glocal_forward_log_Y(struct hmm* hmm, char* a,  char* b, int n,int m
 		Y = hmm->tfY[frame];
 	}
 	
-	
-	char* seqa = a -1;
-	char* seqb = b -1;
-	float* prob = hmm->prob;
 	
 	//c = 0;
 	M[0][0] = prob2scaledprob(0.0f);
@@ -2372,7 +2416,7 @@ ERROR:
 
 int init_thread_hmms(struct shared_data* bsd)
 {
-	int i,j,c;
+	int i,c;
 	int num_threads = 0;
 	struct hmm* master_hmm = NULL;
 	struct hmm* thread_hmm = NULL;
@@ -2402,7 +2446,7 @@ int init_thread_hmms(struct shared_data* bsd)
 
 int entangle_hmms(struct shared_data* bsd)
 {
-	int i,j,c;
+	int i,j;
 	int num_threads = 0;
 	struct hmm* master = NULL;
 	struct hmm* thread_hmm = NULL;
@@ -2745,7 +2789,6 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 	char nuc[] = "ACGTN";
 	char cigarline[128];
 	char mdline[128];
-	char pline[500];
 	char pseq[500];
 	//unsigned char* qual = 0;
 	
@@ -3353,17 +3396,9 @@ void free_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits
 int write_sam_header(struct sam_bam_file* sb_file, FILE* out)
 {
 	int i;
-	char buffer[BUFFER_LEN];
-
-	//snprintf(buffer,BUFFER_LEN,"@HD\tVN:1.3\tSO:coordinate\n");
-
-	//fwrite(buffer, sizeof(buffer[0]),sizeof(buffer)/sizeof(buffer[0]),out);
-	
 	fprintf(out,"@HD\tVN:1.3\tSO:coordinate\n");
 	for(i = 0; i < sb_file->header->n_targets;i++){
 		fprintf(out,"@SQ\tSN:%s\tLN:%d\n", sb_file->header->target_name[i],(int)sb_file->header->target_len[i]);
-		//snprintf(buffer,BUFFER_LEN,"@SQ\tSN:%s\tLN:%d\n", sb_file->header->target_name[i],(int)sb_file->header->target_len[i]);
-		//fwrite(buffer, sizeof(buffer[0]),sizeof(buffer)/sizeof(buffer[0]),out);
 	}
 	return OK;
 }

@@ -25,8 +25,6 @@ https://github.com/samtools/htslib
 FAILED.  This error must be resolved in order to build this package successfully.])
 fi
 
-
-
 AC_CHECK_HEADERS([stdlib.h string.h])
 
 LIB_TLDEVELDIR="libtldevel"
@@ -52,9 +50,6 @@ yes)  AC_DEFINE(DEBUGLEVEL, 0,[No debugging. ]);;
 no)  AC_DEFINE(DEBUGLEVEL, 0,[No debugging.]);;
 *)  AC_MSG_ERROR([Unknown argument to --enable-debugging: $enable_debugging]);;
 esac
-
-
-
 
 if test "$enable_debugging" != "no"; then
         AC_DEFINE(DEBUG,1,[Defines debugging .])

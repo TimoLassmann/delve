@@ -28,10 +28,6 @@
 #define MAX_ERROR_LIMIT_FOR_TRAINING 100
 #define MAX_LENGTH_LIMIT_FOR_TRAINING 100
 
-#define RUN_FULL_HMM 1
-#define RUN_RANDOM_HMM 2
-#define RUN_SCORE_HMM 3
-
 #define ALIGNMENT_FLANKING_LENGTH 10
 #define MAX_LINE 10000
 
@@ -75,23 +71,6 @@ struct hmm{
 	int num_hits;
 };
 
-/*struct thread_data{
-	struct sam_bam_file* sb_file;
-	faidx_t*  index;
-	struct hmm* hmm;
-	struct db* db;
-	struct rescue_probabilities* rp;
-	struct parameters* param;
-	struct genome_probabilities* gp;
-	struct genome_sequences** gc;
-	struct genome_interval* g_int; 
-	int* p_value_ranks;
-	FILE* fout;
-	int start;
-	int end;
-};
-*/
-
 struct genome_sequences{
 	char** genomic_sequences;
 	int* g_len;
@@ -121,11 +100,7 @@ struct hmm* glocal_backward_log_Y(struct hmm* hmm, char* a, char* b, int n,int m
 struct hmm* get_prob_log_Y(struct hmm* hmm, char* a, char* b, int n,int m,float frac,int frame );
 struct hmm* random_model_calc(struct hmm* hmm, char* rseq, char* gseq,int rlen, int glen,float frac,int mode);
 
-struct read_info** run_score_alignments_hmm(struct hmm* hmm,struct read_info** ri,struct db* db, int num_threads,int size);
 void* do_score_alignments_thread_hmm(void *threadarg);
-
-//void print_samheader(TOMEDB* db,char* command_line);
-void unaligned_to_sam(struct read_info* ri);
 
 int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam_bam_entry* entry,int id, char* aln,unsigned flag,float score);
 
