@@ -10,7 +10,13 @@
 #include <config.h>
 #endif
 
+
+#ifdef DEBUG
+#define MAXNUMQUERY 1000
+#else
 #define MAXNUMQUERY 1000000
+#endif
+
 #define LIST_STORE_SIZE 10
 
 #define NCODE  4
@@ -66,9 +72,10 @@ struct hmm{
 	
 	int x;
 	int y;
+	int num_hits;
 };
 
-struct thread_data{
+/*struct thread_data{
 	struct sam_bam_file* sb_file;
 	faidx_t*  index;
 	struct hmm* hmm;
@@ -77,12 +84,13 @@ struct thread_data{
 	struct parameters* param;
 	struct genome_probabilities* gp;
 	struct genome_sequences** gc;
+	struct genome_interval* g_int; 
 	int* p_value_ranks;
 	FILE* fout;
 	int start;
 	int end;
 };
-
+*/
 
 struct genome_sequences{
 	char** genomic_sequences;
@@ -90,24 +98,21 @@ struct genome_sequences{
 };
 
 
-extern struct hmm* init_hmm(int x, int y);
+extern struct hmm* init_hmm(int x, int y, int z);
 
 void write_hmm_to_file(struct hmm* hmm,char* filename);
 void read_hmm_from_file(struct hmm* hmm,char* filename);
 char* transform_16to5_sequence(char* seq,int len);
 
-int run_delve(struct parameters* param);
-int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout);
+//int run_delve(struct parameters* param);
+//int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout);
 
 //struct hmm* run_pHMM(struct hmm* localhmm,struct read_info** ri,struct db* db,int num_threads ,int size, int mode,FILE* fout);
-void init_thread_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads);
-void entangle_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads);
+//int init_thread_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads);
+//int  entangle_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads);
 void* do_baum_welch_thread(void *threadarg);
 void* do_baum_welch_thread_random_model(void *threadarg);
 void free_hmm(struct hmm* hmm);
-float prob2scaledprob(float p);
-float scaledprob2prob(float p);
-
 
 char* glocal_viterbi_log_Y(struct hmm* hmm,char* a, char* b, int n,int m);
 
@@ -121,11 +126,13 @@ void* do_score_alignments_thread_hmm(void *threadarg);
 
 //void print_samheader(TOMEDB* db,char* command_line);
 void unaligned_to_sam(struct read_info* ri);
-void align_to_sam(struct genome_interval* g_int,struct sam_bam_entry* entry, char* aln,unsigned flag,float score);
+
+int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam_bam_entry* entry,int id, char* aln,unsigned flag,float score);
+
 //void align_to_sam(char* aln, TOMEDB* db,unsigned int pos, unsigned flag,float score, struct read_info* ri,unsigned char* posteriors);
 char* reverse_path(char* org );
 int reverse_complement_sequence(char* p,int len);
-int reverse(char* p,int len);
+//int reverse(char* p,int len);
 int re_estimate_random(struct hmm* hmm);
 
 int re_estimate(struct hmm* hmm);

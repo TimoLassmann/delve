@@ -8,7 +8,7 @@ LIB_TLDEVELDIR = @LIB_TLDEVELDIR@
 # MYLIBDIRS = -L${top_builddir}/${LIB_TLDEVELDIR} 
 
 
-MYLIBDIRS = ../libtldevel/libhtsglue.a  ../libtldevel/librtree.a  ../libtldevel/libthrpool.a  ../libtldevel/libtldevel.a
+MYLIBDIRS = ../libtldevel/libhtsglue.a  ../libtldevel/librtree.a  ../libtldevel/libthrpool.a  ../libtldevel/libtldevel.a ../libtldevel/libpwrite.a
 
 MYINCDIRS = -I${top_builddir}/${LIB_TLDEVELDIR} \
             -I${top_srcdir}/${LIB_TLDEVELDIR}

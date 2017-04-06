@@ -2,55 +2,106 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <string.h>
-
+#include <inttypes.h>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-
 #include "tldevel.h"
 #include "rbtree.h"
 #include "htsglue.h"
+#include "thr_pool.h"
 #include  <ctype.h>
 #include "rtr.h"
+#include "pwrite.h"
 #include "delve.h"
 
 #define OPT_NTHREAD 1
 #define OPT_OUT 2
+
 
 struct parameters{
 	char** infiles;
 	char* genome;
 	char* aln_infile;
 	char* hmm_file;
-	char* out_prefix;
+	char* out_file;
 	int num_infiles;
 	int num_threads;
+	int num_maxhits;
 };
 
-struct rtr_data* build_rtree(struct sam_bam_file* sb_file );
 
-int add_genome_sequences(struct sam_bam_file* sb_file,struct genome_sequences** gc, char* genome);
+struct shared_data{
+	struct parameters* param;
+	struct genome_sequences**gc;
+	struct sam_bam_file* sb_file;
+	struct rtr_data* rtree;
+	struct thr_pool* pool;
+	struct pwrite_main* pw;
+	struct hmm** thread_hmm;
+	struct hmm* master_hmm;
+	struct genome_interval** g_int_working;	
+	double* thread_forward;
+	faidx_t*  index;
+	void (*free)(struct shared_data* bsd);
+	FILE* fptr_out;
+	int buffer_size;
+	int num_threads;
+	int num_maxhits;
+	int max_seq_len; 
+	float pseudo_counts;
+};
+
+struct thread_data{
+	struct shared_data* bsd;
+	int thread_id;
+};
+	
+
+
+static pthread_mutex_t avail_mtx;
+
+/* related to shared memory */
+struct shared_data* init_shared_data(struct parameters* param, int buffer_size);
+int init_shared_data_hmms(struct shared_data* bsd);
+void free_shared_data(struct shared_data* bsd);
+
+/* related to thread data  */
+struct thread_data** init_thread_data(struct shared_data* bsd,int num_threads);
+void free_thread_data(struct thread_data** td,int num_threads);
+
+struct rtr_data* build_rtree(struct sam_bam_file* sb_file );
+int add_genome_sequences(struct shared_data* bsd);
 
 //int add_genome_sequences(struct sam_bam_file* sb_file,char* genome);
 //int remove_genome_sequences(struct sam_bam_file* sb_file);
+int init_thread_hmms(struct shared_data* bsd);
+
+int get_start_stop_for_threads(const int num_threads, const int num_seq, const int id, int *start,int *stop);
+
+int run_estimate_random_models(struct shared_data* bsd);
+int run_estimate_sequence_model(struct shared_data* bsd);
+int run_score_alignments(struct shared_data* bsd);
+
+int entangle_hmms(struct shared_data* bsd);
 
 int run_delve(struct parameters* param);
-
 
 struct genome_sequences** init_genome_sequences(int num, int num_maxhits);
 int clear_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits);
 void free_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits);
 
+int reverse(uint8_t* p,int len);
+
+int convert_buffer_ACGT_to_0123(struct sam_bam_file* sb_file);
+int write_sam_header(struct sam_bam_file* sb_file,FILE* out);
 
 int main (int argc,char *argv[]) 
-{
+{	
+	
 	struct parameters* param = NULL;
 	int i,c;
-	
-	//const char description[] = "Aligns HMMs to new sequences.";
-	//const char usage[] = "<genome> <seed aln> ";
-
 
 	tlog.echo_build_config();
        
@@ -60,10 +111,10 @@ int main (int argc,char *argv[])
 	param->genome = NULL;
 	param->aln_infile = NULL;
 	param->hmm_file = NULL;
-	param->out_prefix = NULL;
+	param->out_file = NULL;
 	param->num_infiles = 0;
 	param->num_threads = 4;
-	
+	param->num_maxhits = 10;
 	while (1){	
 		static struct option long_options[] ={
 			{"t",required_argument,0,OPT_NTHREAD},
@@ -84,7 +135,7 @@ int main (int argc,char *argv[])
 				param->num_threads = atoi(optarg);
 				break;
 			case OPT_OUT:
-				param->out_prefix = optarg;
+				param->out_file = optarg;
 				break;
 		case 'h':
 			fprintf(stdout,"GAGA\n");
@@ -122,155 +173,281 @@ int main (int argc,char *argv[])
 	}
 	param->genome = param->infiles[0];
 	param->aln_infile = param->infiles[1];
-	
-	
+		
 	init_logsum();
 	
 	RUN(run_delve(param));
 	
 	if(param){
-		for(i = 0; i < param->num_infiles;i++){
-			MFREE(param->infiles[i]);
-		}
+		//for(i = 0; i < param->num_infiles;i++){
+		//	MFREE(param->infiles[i]);
+		//}
 		MFREE(param->infiles);
-		MFREE(param->out_prefix);
+		//MFREE(param->out_prefix);
 		MFREE(param);
 	}
 	return EXIT_SUCCESS;
 ERROR:
 	fprintf(stdout,"\n  Try run with  --help.\n\n");
 	if(param){
-		for(i = 0; i < param->num_infiles;i++){
-			MFREE(param->infiles[i]);
-		}
 		MFREE(param->infiles);
-		MFREE(param->out_prefix);
 		MFREE(param);
 	}
 	return EXIT_FAILURE;
 }
 
-
-
-
 int run_delve(struct parameters* param)
 {
-	struct sam_bam_file* sb_file = NULL;
-	struct rtr_data* rtree = NULL;
+	struct shared_data* bsd = NULL;
 	struct hmm* hmm = NULL;
-
-	struct genome_sequences** gc = NULL; 
-	int i,j,iter;
-
-
-	int buffer_size = 1000000;
+	int iter;
+	
+	int buffer_size = MAXNUMQUERY;	
+	
 	init_logsum();
-	
-	faidx_t*  index = NULL;
-	RUNP(sb_file = open_SAMBAMfile(param->aln_infile,buffer_size,0,0));
 
-	/* Alloc space for genomic sequences.. */
+	RUNP(bsd = init_shared_data(param,buffer_size));
+	
+	/* 1. build rtree
+	   requires reading all alignments in file. This means that I need to open the 
+	   file, loop, close and then re-open.... 
+	   Additional : this means that max_seq_len will be recorded.. 
+	*/
+        LOG_MSG("Quantifying read depth at pu1tatitve mapping locations.");
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits , 0,0));
+	RUNP(bsd->rtree =  build_rtree(bsd->sb_file));
+	
+	/* assign max_seq_len */
+	RUN(get_max_seq_len_from_sb_buffer(bsd->sb_file,&bsd->max_seq_len));
+	
+	RUN(close_SAMBAMfile(bsd->sb_file));
 
-	RUNP(gc = init_genome_sequences(buffer_size,sb_file->max_num_hits));
+	/* init all HMMs; now that I have the max_seq_len... */
 	
-	RUNP(index = get_faidx(param->genome));
-	RUNP(hmm = init_hmm(100, 100));
-	RUN(add_pseudo_count(hmm, 100.0f));
-	RUN(re_estimate(hmm));
+	
+	/* 2. build model 
+	   Here I read in the first X (MAXNUMQUERY sequences and re-use them for model building 
+	   etc. I.e. I open, read and only after all models are trained I close....
+	*/
+	/* open file again - read all alignments (param "1","0") */
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
+     	/* Alloc space for genomic sequences.. */
+	//RUNP(gc = init_genome_sequences(buffer_size,sb_file->max_num_hits));
 
-	tlog.log_message("Opening alignment file...");
+	/* Load index of genome  */
+	//RUNP(index = get_faidx(param->genome));
 	
-	RUN(read_SAMBAM_chunk(sb_file,1,0));
+        
+	/* start reading first NMAXNUMQUERY alignments...  */
+        LOG_MSG("Opening alignment file...");
 	
-	RUN(add_genome_sequences(sb_file,gc,param->genome));
-	
-	//for(i = 0; i < sb_file->num_read;i++){
-	//	RUN(ACGT_to_0123(sb_file->buffer[i]->sequence,&sb_file->buffer[i]->len  ));
-	//	for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
-	//		DPRINTF2("%d %d %p",i,j,sb_file->buffer[i]->genomic_sequences[j] );
-	//	}
-	//}
-	tlog.log_message("Quantifying read depth at putatitve mapping locations.");
-	RUNP(rtree =  build_rtree(sb_file) );
-	exit(0);
-	tlog.log_message("Estimating Random model...");
-	
-	
-	RUN(run_pHMM(hmm, sb_file ,gc,index,param->num_threads ,sb_file->num_read,RUN_RANDOM_HMM,stdout));
-	RUN(re_estimate_random(hmm));
-	
-	tlog.log_message("done");
+	RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+	/* By default sequences will be human readable - need to transform into 01234...  */
+	RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
+	/* Retrieve all genome sequences "hit" by reads in the first SAM/BAM chunk
+	   Note: add_genome_sequences, specific to delve (not a library function) will convert the sequences to 0123... 
+	 */
+	RUN(add_genome_sequences(bsd));
 
-	
-	for(i = 0; i < sb_file->num_read;i++){
-		//RUN(ACGT_to_0123(sb_file->buffer[i]->sequence,&sb_file->buffer[i]->len  ),"ACGT to 0123 failed");
-		for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
-//			DPRINTF2("%d %d %p",i,j,sb_file->buffer[i]->genomic_sequences[j] );
-		}
-	}
-	//total_numseq = 0;
-	tlog.log_message("Estimating Sequence model...");
-	for(iter = 0; iter < 10;iter++){
-		tlog.log_message("%d iteration...",iter);
-		RUN(run_pHMM(hmm,sb_file ,gc,  index,param->num_threads,sb_file->num_read,RUN_FULL_HMM,stdout));
+	/* allocate HMMs... */
+
+	RUN(init_shared_data_hmms(bsd));
 
 	
-		RUN(re_estimate(hmm));
-		RUN(add_pseudo_count(hmm, 100.0f));
-		RUN(re_estimate_random(hmm));
-	}
-	tlog.log_message("done");
-	RUN(clear_genome_sequences(gc,buffer_size,sb_file->max_num_hits  ));
-//	RUN(remove_genome_sequences(sb_file));
-	//Start from beginning....
-	RUN(close_SAMBAMfile(sb_file));
-	RUNP(sb_file = open_SAMBAMfile(param->aln_infile,1000000,0,0));
+	/* Estimate random models  */
+	LOG_MSG("Estimating Random model (%d)",bsd->sb_file->num_read);
+//	RUN(run_estimate_random_models(bsd));
+        LOG_MSG("done");
 	
-	RUN(echo_header(sb_file));
-	tlog.log_message("Generating alignments...");
+	LOG_MSG("Estimating Sequence model...");
+//	RUN(run_estimate_sequence_model(bsd));
+        RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
+     	RUN(close_SAMBAMfile(bsd->sb_file));
+	LOG_MSG("done");	
+	
+	/* Generating alignments  */
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
 
+	LOG_MSG("Generating alignments...");
+	RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
+	
 	while(1){
-		RUN(read_SAMBAM_chunk(sb_file,1,0));
-		//DPRINTF2("read:%d",sb_file->num_read );
-		//RUN(read_sam_bam_chunk(infile,data->si, buffer,1,&numseq),"Read sam/bam chunk in thread %d failed", data->threadID);
-		//if((status = read_sam_bam_chunk(infile,data->si, buffer,1,&numseq)) != kslOK)  exit(status);
-		if(!sb_file->num_read){
+		RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+		if(!bsd->sb_file->num_read){
 			break;
 		}
-		tlog.log_message("read:%d",sb_file->num_read);
-		RUN(add_genome_sequences(sb_file,gc,param->genome));
-		for(i = 0; i < sb_file->num_read;i++){
-			RUN(ACGT_to_0123(sb_file->buffer[i]->sequence,&sb_file->buffer[i]->len  ));
-		}
-		
-		RUN(run_pHMM(hmm,sb_file ,gc,  index,param->num_threads,sb_file->num_read,RUN_SCORE_HMM,stdout));
-		RUN(clear_genome_sequences(gc,buffer_size,sb_file->max_num_hits  ));
+	        //LOG_MSG("read:%d",bsd->sb_file->num_read);
+		RUN(add_genome_sequences(bsd));
+		RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
+		RUN(run_score_alignments(bsd));	       
+		RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
         }
-	tlog.log_message("done");
 	
-	//rewind(file);
-	
-	//param->num_query = 1000000;
-	/*numseq = read_sam_chunk(ri,db,file);
-	for(i = 0;i < numseq;i++){
-		if(ri[i]->strand[0] != 0){
-			ri[i]->seq = reverse_complement(ri[i]->seq,ri[i]->len);
-		}
-		ri[i]->seq = transform_16to5_sequence(ri[i]->seq,ri[i]->len);
-	}
-	
-	hmm = run_pHMM(hmm,ri, db,num_threads,numseq,RUN_RANDOM_HMM,out );
-	hmm = re_estimate_random(hmm);
-	fprintf(stderr,"	done.\n");
-	*/
-	free_faidx(index);
-	free_hmm(hmm);
-	RUN(close_SAMBAMfile(sb_file));
-
-	
+	RUN(close_SAMBAMfile(bsd->sb_file));
+	LOG_MSG("Done.");
+	bsd->free(bsd);
 	return OK;
 ERROR:
+	if(bsd){
+		bsd->free(bsd);
+	}
 	return FAIL;
+}
+
+
+int run_estimate_random_models(struct shared_data* bsd)
+{
+	struct thread_data** td = NULL;
+	int i;
+	int num_threads;
+	int status;
+	num_threads = bsd->param->num_threads;
+
+	/* I think I should add pseudocounts  */
+
+	RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
+	RUN(re_estimate(bsd->master_hmm)); /*  */
+	
+	/* copy parameters from master hmm into copies used by threads...  */
+	RUN(init_thread_hmms(bsd));
+
+	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
+	RUNP(td = init_thread_data(bsd,num_threads));
+
+	/* kick off jobs  */
+	for(i = 0; i < num_threads;i++){
+        	if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread_random_model,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
+	}
+	/* wait for all jobs to finish */
+	thr_pool_wait(bsd->pool);
+
+	/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
+	RUN(entangle_hmms(bsd));
+	
+	/* re-estimate parameters.. */
+	RUN(re_estimate_random(bsd->master_hmm));
+	
+	
+	free_thread_data(td,num_threads);
+	return OK;
+ERROR:
+	free_thread_data(td,num_threads);
+	return FAIL;
+}
+
+int run_estimate_sequence_model(struct shared_data* bsd)
+{
+	struct thread_data** td = NULL;
+	int i,iter;
+	int num_threads;
+	int status;
+	int iterations;
+
+	iterations = 1;
+	num_threads = bsd->param->num_threads;
+	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
+	RUNP(td = init_thread_data(bsd,num_threads));
+	/* I think I should add pseudocounts  */
+	for(iter = 0 ; iter< iterations;iter++){
+		LOG_MSG("Iteration %d.",iter);
+		RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
+	 	/* copy parameters from master hmm into copies used by threads...  */
+		RUN(init_thread_hmms(bsd));
+
+		for(i = 0; i < num_threads;i++){
+			bsd->thread_forward[i] = 0.0; // (i.e P = 1.0);
+			LOG_MSG("%d score %f.",i,bsd->thread_forward[i]);
+		}
+		/* kick off jobs  */
+		for(i = 0; i < num_threads;i++){
+			if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
+		}
+		/* wait for all jobs to finish */
+		thr_pool_wait(bsd->pool);
+		
+		for(i = 0; i < num_threads;i++){
+			fprintf(stderr,"%d score %f\n",i,bsd->thread_forward[i]);
+//		        LOG_MSG("%d score: %f\n", bsd->sb_file->buffer[i]->fscore);
+		}
+		/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
+		RUN(entangle_hmms(bsd));
+		/* re-estimate parameters.. */
+		RUN(re_estimate(bsd->master_hmm));
+		/* re-estimate random model more... */
+		RUN(re_estimate_random(bsd->master_hmm));
+	}
+	free_thread_data(td,num_threads);
+	return OK;
+ERROR:
+	free_thread_data(td,num_threads);
+	return FAIL;
+}
+
+
+int run_score_alignments(struct shared_data* bsd)
+{
+	struct thread_data** td = NULL;
+	int i;
+	int num_threads;
+	int status;
+	num_threads = bsd->param->num_threads;
+	/* I think I should add pseudocounts  */
+	
+	/* copy parameters from master hmm into copies used by threads...  */
+	RUN(init_thread_hmms(bsd));
+
+	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
+	RUNP(td = init_thread_data(bsd,num_threads));
+	if((status = thr_pool_queue(bsd->pool, bsd->pw->write_thread_function, bsd->pw)) == -1) fprintf(stderr,"Adding job to queue failed.");
+	/* Important! otherwise a deadlock is possible/likely... */
+	RUN(bsd->pw->write_wait(bsd->pw));
+	
+	/* kick off jobs  */
+	for(i = 0; i < num_threads;i++){ // numthreads includes the one writer thread ... need to take away one
+        	if((status = thr_pool_queue(bsd->pool,do_score_alignments_thread_hmm ,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");
+	}
+        /* wait for all jobs to finish */
+	thr_pool_wait(bsd->pool);
+	
+	
+	free_thread_data(td,num_threads);
+	return OK;
+ERROR:
+	free_thread_data(td,num_threads);
+	return FAIL;
+}
+
+struct thread_data** init_thread_data(struct shared_data* bsd,int num_threads)
+{
+	int i;
+	struct thread_data** td = NULL;
+		
+	MMALLOC(td,sizeof(struct thread_data*) * num_threads);
+
+	for(i = 0; i < num_threads;i++){
+		td[i] = NULL;
+		MMALLOC(td[i],sizeof(struct thread_data));
+		td[i]->thread_id = i;
+		td[i]->bsd = bsd;
+		/* kick off jobs? */
+	}
+	return td;
+ERROR:
+	return NULL;
+}
+
+
+void free_thread_data(struct thread_data** td, int num_threads)
+{
+	int i;
+	if(td){
+		for(i = 0; i < num_threads;i++){
+			if(td[i]){
+				MFREE(td[i]);
+			}
+		}
+		MFREE(td);
+	}
 }
 
 
@@ -280,7 +457,7 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 
 	int64_t* val = NULL;
 	int i,j;
-	int32_t id = 0;
+	int32_t id = 1;
 
 	MMALLOC(val,sizeof(int64_t)*2);
 	RUNP(rtree = init_rtr_data(1 , 5 ,sb_file->buffer_size ));
@@ -289,6 +466,8 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 		//DPRINTF2("read:%d",sb_file->num_read );
 		//RUN(read_sam_bam_chunk(infile,data->si, buffer,1,&numseq),"Read sam/bam chunk in thread %d failed", data->threadID);
 		//if((status = read_sam_bam_chunk(infile,data->si, buffer,1,&numseq)) != kslOK)  exit(status);
+		tlog.log_message("read:%d",sb_file->num_read);
+		
 		if(!sb_file->num_read){
 			break;
 		}
@@ -297,16 +476,17 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 			for (j=0; j < sb_file->buffer[i]->num_hits ; j++) {
 				val[0] = sb_file->buffer[i]->start[j];
 				val[1] = sb_file->buffer[i]->stop[j];
+				fprintf(stdout,"inserting: %" PRId64 " %" PRId64 "\n",val[0],val[1]);
 				rtree->insert(rtree,val,id,1,1);
+				id++;
 			}
-			
 		}
         }
 	MFREE(val);
 	RUN(rtree->flatten_rtree(rtree));
 	RUN(rtree->print_rtree(rtree, rtree->root));
 	for (i = 0; i < rtree->stats_num_interval; i++) {
-//		fprintf(stdout,"%d\n", rtree->flat_interval[i]->count);
+		fprintf(stdout,"%d\n", rtree->flat_interval[i]->count);
 	}
 	return rtree;
 ERROR:
@@ -317,7 +497,7 @@ ERROR:
 	return NULL;
 }
 
-int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout)
+/* int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_sequences** gc, faidx_t*  index,int num_threads ,int size, int mode, FILE* fout)
 {
 	struct thread_data* thread_data_array = NULL;
 
@@ -328,7 +508,8 @@ int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_se
 	int t;
 	int interval = 0;
 	int rc;
-	
+
+
 	interval =  (int)((double)size /(double)num_threads);
 
 	MMALLOC(thread_data_array, sizeof(struct thread_data)* num_threads);
@@ -338,19 +519,23 @@ int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_se
 		thread_data_array[t].index = index;
 		thread_data_array[t].gc   = gc;
 	//	thread_data_array[t].db = db;
-		thread_data_array[t].hmm = init_hmm(100,100);
+		thread_data_array[t].hmm = init_hmm(100,100,10);
 		thread_data_array[t].start = t*interval;
 		thread_data_array[t].end = t*interval + interval;
 		thread_data_array[t].fout = fout;
+		
+		RUNP(thread_data_array[t].g_int = init_genome_interval(0,0,0));
+	
 	}
 	thread_data_array[num_threads - 1].gc = gc;
 //	thread_data_array[num_threads - 1].db = db;
 	thread_data_array[num_threads - 1].sb_file = sb_file;
 	thread_data_array[num_threads - 1].index = index;
-	thread_data_array[num_threads - 1].hmm = init_hmm(100, 100);
+	thread_data_array[num_threads - 1].hmm = init_hmm(100, 100,10);
 	thread_data_array[num_threads - 1].start = t*interval;
 	thread_data_array[num_threads - 1].end = size;
 	thread_data_array[num_threads - 1].fout = fout;
+	RUNP(thread_data_array[num_threads-1].g_int = init_genome_interval(0,0,0));
 	
 	
 	init_thread_hmms(thread_data_array,localhmm,num_threads);
@@ -399,6 +584,7 @@ int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_se
 	
 	for(t = 0;t < num_threads;t++) {
 		free_hmm(thread_data_array[t].hmm);
+		free_genome_interval(thread_data_array[t].g_int);
 	}
 	
 	free(thread_data_array);
@@ -406,80 +592,165 @@ int run_pHMM(struct hmm* localhmm,struct sam_bam_file* sb_file ,struct genome_se
 ERROR:
 	return FAIL;
 }
+*/
+
+
+
+
+
+void* do_baum_welch_thread_random_model(void *threadarg)
+{
+	struct thread_data *data;
+	struct genome_sequences** gc = NULL;
+	struct sam_bam_entry** buffer = NULL;
+	struct hmm* hmm = NULL;
+	int thread_id = -1;
+	int num_threads = 0;
+	int num_sequences = 0;
+	int i,hit;
+	int start,stop;
+	
+	data = (struct thread_data *) threadarg;
+
+	thread_id = data->thread_id;
+
+	num_sequences = data->bsd->sb_file->num_read;
+	num_threads = data->bsd->num_threads;
+	
+	hmm = data->bsd->thread_hmm[thread_id];
+	buffer = data->bsd->sb_file->buffer;
+	gc = data->bsd->gc;
+	start = 0;
+	stop = 0;
+	
+	RUN(get_start_stop_for_threads(num_threads, num_sequences,thread_id,&start,&stop));
+	
+	//struct genome_interval* g_int = NULL;
+
+	//struct read_info** ri = data->ri;
+
+	//struct db* db = data->db;
+	//int j;
+	//int strand = 0;
+	
+//	char* seq = 0;
+	char* genomic_sequence = NULL;
+	int len;
+	
+//	seq = malloc(sizeof(char) * 100);
+	//g_int = data->g_int;
+	for(i = start; i < stop;i++){
+       		for(hit = 0; hit < buffer[i]->num_hits;hit++){
+			
+			//DPRINTF2("%s: %d ->%d", data->sb_file->buffer[i]->name,data->sb_file->buffer[i]->start[hit],data->sb_file->buffer[i]->stop[hit] );
+			
+			//RUN(get_chr_start_stop(data->sb_file,i,hit,g_int),"get_chr_start_stop failed");
+			//g_int->start -=ALIGNMENT_FLANKING_LENGTH;
+			//g_int->stop += ALIGNMENT_FLANKING_LENGTH;
+			//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
+			genomic_sequence = gc[i]->genomic_sequences[hit];//  data->sb_file->buffer[i]->genomic_sequences[hit];
+			len = gc[i]->g_len[hit];//  data->sb_file->buffer[i]->g_len[hit];
+			hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),0);
+			
+
+		}
+		//DPRINTF1("modeling read sequence %d : %s",i,data->sb_file->buffer[i]->sequence);
+		hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),1);
+		//		ri[i]->random_read_score = hmm->random_score;
+	}
+//	free(seq);
+//	free_genome_interval(g_int);
+
+	return NULL;
+ERROR:
+	return NULL;
+}
 
 void* do_baum_welch_thread(void *threadarg)
 {
 	struct thread_data *data;
-	data = (struct thread_data *) threadarg;
+	struct genome_sequences** gc = NULL;
+	struct sam_bam_entry** buffer = NULL;
+	struct hmm* hmm = NULL;
+	int thread_id = -1;
+	int num_threads = 0;
+	int num_sequences = 0;
+	int i,hit;
+	int start;
+	int stop;
+	int max_num_hits  = 0;
 	
-	//struct read_info** ri = data->ri;
-	struct hmm* hmm = data->hmm;
-	//struct db* db = data->db;
-	const int start = data->start;
-	const int end = data->end;
-	int i,j,len;
+	data = (struct thread_data *) threadarg;
+
+	thread_id = data->thread_id;
+
+	num_sequences = data->bsd->sb_file->num_read;
+	num_threads = data->bsd->num_threads;
+	max_num_hits = data->bsd->sb_file->max_num_hits;
+	
+	hmm = data->bsd->thread_hmm[thread_id];
+	buffer = data->bsd->sb_file->buffer;
+	gc = data->bsd->gc;
+	float scores[max_num_hits+1];// = malloc(sizeof(float)* (LIST_STORE_SIZE+1));
+	float genome_scores[max_num_hits+1];// = malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
+
+
+	start = 0;
+	stop = 0;
+	RUN(get_start_stop_for_threads(num_threads, num_sequences,thread_id,&start,&stop));
+
+	int j,len;
 	//int strand = 0;
 	char* genomic_sequence = NULL;
-	char* seq = 0;
+	//char* seq = 0;
 	
 	double sum = 0;
 	int c;
-	float* scores = malloc(sizeof(float)* (LIST_STORE_SIZE+1));
-	float* genome_scores = malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
 	float max,max2,unaligned;
-	struct genome_interval* g_int = NULL;
-	RUNP(g_int = init_genome_interval(0,0,0));
-	
-	seq = malloc(sizeof(char) * 100);
-	c = LIST_STORE_SIZE;
-	for(i = start; i < end;i++){
-		if(data->sb_file->buffer[i]->num_hits){
+	LOG_MSG("thread %d : %d -%d.",thread_id,start,stop);
+
+//	g_int = data->g_int;
+	//seq = malloc(sizeof(char) * 100);
+	for(i = start; i < stop;i++){
+		if(buffer[i]->num_hits){
 			//if(ri[i]->identity[0] >= 0.0f   ){
 			//hit = 0;
 			max = -SCALEINFTY;
 			
 			sum = prob2scaledprob(0.0);
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
-				
-				//DPRINTF2("%s: %d ->%d", data->sb_file->buffer[i]->name,data->sb_file->buffer[i]->start[hit],data->sb_file->buffer[i]->stop[hit] );
-				
-			//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
-				//		DPRINTF2("%d hit %d	%p\n",i,c, data->sb_file->buffer[i]->genomic_sequences[c]);
-				//genomic_sequence = data->sb_file->buffer[i]->sequence[c];// get_sequence(data->index,g_int);
-				//len =   data->sb_file->buffer[i]->len[c];
-
-				genomic_sequence = data->gc[i]->genomic_sequences[c];
-				len = data->gc[i]->g_len[c];
+			for(c = 0; c < buffer[i]->num_hits;c++){
+				genomic_sequence = gc[i]->genomic_sequences[c];
+				len = gc[i]->g_len[c];
 
 				
-				hmm = glocal_forward_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len ,c);
+				hmm = glocal_forward_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len ,c);
 				if(!hmm){
 					
-					DPRINTF2("%s (%d): %d ->%d", data->sb_file->buffer[i]->name,i,data->sb_file->buffer[i]->start[c],data->sb_file->buffer[i]->stop[c] );
-					for(len = 0;len <  data->gc[i]->g_len[c];len++){
-						fprintf(stdout,"%d ", data->gc[i]->genomic_sequences[c][len]);
+					DPRINTF2("%s (%d): %d ->%d", buffer[i]->name,i,buffer[i]->start[c],buffer[i]->stop[c] );
+					for(len = 0;len <  gc[i]->g_len[c];len++){
+						fprintf(stdout,"%d ", gc[i]->genomic_sequences[c][len]);
 					}
 					fprintf(stdout,"\n");
 					//return FAIL;
 				}
 				
 				
-				hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len, prob2scaledprob(1.0),0);
+				hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),0);
 				
 				scores[c] = hmm->score;// + ri[i]->priors[hit];
 				genome_scores[c] = hmm->random_score ;// ri[i]->priors[c];
 			}
 			
-			hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len , prob2scaledprob(1.0),1);
+			hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len , prob2scaledprob(1.0),1);
 			unaligned = hmm->random_score;// + prob2scaledprob(data->param->unaligned_prior);
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				unaligned += genome_scores[c];// + prob2scaledprob(1.0 - scaledprob2prob(genome_scores[c]));
 			}
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				sum = prob2scaledprob(1.0f);
-				for(j = 0; j < data->sb_file->buffer[i]->num_hits;j++){
+				for(j = 0; j < buffer[i]->num_hits;j++){
 					if(c == j){
 						//read is aligned at this seed position
 						sum += scores[j];// + genome_scores[j];
@@ -498,115 +769,97 @@ void* do_baum_welch_thread(void *threadarg)
 			//}
 			max2= prob2scaledprob(0.0);
 			max = prob2scaledprob(0.0);
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			int best  = -1;
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				//for(c = 0; c <  LIST_STORE_SIZE+1;c++){
 				//	if(ri[i]->identity[c] >= 0.0f){
 				sum = logsum(sum,scores[c]);
 				if(scores[c] >= max){
 					max2 = max;
 					max = scores[c];
+					best  = c;
 				}else{
 					if(scores[c] >= max2){
 						max2 = scores[c];
 					}
 				}
 			}
-			
+			/* add max prob to thread score for bookkeeping. */
+			//fprintf(stdout,"score: best: %f\n",scores[max - sum);
+			//fprintf(stdout,"thread %d: %f adding %f\n",thread_id,  data->bsd->thread_forward[thread_id],scores[max] - sum);
+			for(c = 0; c < buffer[i]->num_hits;c++){
+				data->bsd->thread_forward[thread_id] += scores[c] - sum;
+			}
 			//hit = 0;
 			//if(i < 5){
 			
 			///}
 			max =  prob2scaledprob(scaledprob2prob(max - sum ) -scaledprob2prob(max2 - sum ) );
+
 			
 		
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
-				genomic_sequence = data->gc[i]->genomic_sequences[c];//  data->sb_file->buffer[i]->genomic_sequences[c];
-				len = data->gc[i]->g_len[c];//   data->sb_file->buffer[i]->g_len[c];
+				genomic_sequence = gc[i]->genomic_sequences[c];//  data->sb_file->buffer[i]->genomic_sequences[c];
+				len = gc[i]->g_len[c];//   data->sb_file->buffer[i]->g_len[c];
 				
-				DPRINTF2("len: %d and %d",data->sb_file->buffer[i]->len,  len);
-				hmm = glocal_backward_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len);
+				DPRINTF2("len: %d and %d",buffer[i]->len,  len);
+				hmm = glocal_backward_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len);
 				
-				hmm = get_prob_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len, scores[c] - sum  ,c);// max ,c);//  hmm->score + hmm->score - sum + ri[i]->priors[hit]  );
+				hmm = get_prob_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, scores[c] - sum  ,c);// max ,c);//  hmm->score + hmm->score - sum + ri[i]->priors[hit]  );
 				//fprintf(stderr,"%s:%d	%f	%f\n",data->sb_file->buffer[i]->name,c,scores[c] - sum,scaledprob2prob(scores[c] - sum) );
 			}
 			
 		}
 	}
-	free(genome_scores);
-	free(scores);
-	free(seq);
-	pthread_exit((void *) 0);
+	//free_genome_interval(g_int);
+	//free(genome_scores);
+	//free(scores);
+	//free(seq);
+	return NULL;
 ERROR:
-	pthread_exit((void *) 0);
+	return NULL;
 }
-
-
-
-void* do_baum_welch_thread_random_model(void *threadarg)
-{
-	struct thread_data *data;
-	data = (struct thread_data *) threadarg;
-	struct genome_interval* g_int = NULL;
-
-	//struct read_info** ri = data->ri;
-	struct hmm* hmm = data->hmm;
-	//struct db* db = data->db;
-	const int start = data->start;
-	const int end = data->end;
-	int i,hit;
-	int j;
-	//int strand = 0;
-	
-	char* seq = 0;
-	char* genomic_sequence = NULL;
-	int len;
-	
-	seq = malloc(sizeof(char) * 100);
-	
-	RUNP(g_int = init_genome_interval(0,0,0));
-	
-	for(i = start; i < end;i++){
-		
-		for(hit = 0; hit < data->sb_file->buffer[i]->num_hits;hit++){
-			
-			//DPRINTF2("%s: %d ->%d", data->sb_file->buffer[i]->name,data->sb_file->buffer[i]->start[hit],data->sb_file->buffer[i]->stop[hit] );
-			
-			//RUN(get_chr_start_stop(data->sb_file,i,hit,g_int),"get_chr_start_stop failed");
-			//g_int->start -=ALIGNMENT_FLANKING_LENGTH;
-			//g_int->stop += ALIGNMENT_FLANKING_LENGTH;
-			//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
-			genomic_sequence = data->gc[i]->genomic_sequences[hit];//  data->sb_file->buffer[i]->genomic_sequences[hit];
-			len = data->gc[i]->g_len[hit];//  data->sb_file->buffer[i]->g_len[hit];
-			hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len, prob2scaledprob(1.0),0);
-			
-
-		}
-		hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len, prob2scaledprob(1.0),1);
-		//		ri[i]->random_read_score = hmm->random_score;
-	}
-	free(seq);
-	free_genome_interval(g_int);
-
-	pthread_exit((void *) 0);
-ERROR:
-	pthread_exit((void *) 0);
-}
-
-
 
 void* do_score_alignments_thread_hmm(void *threadarg)
 {
 	struct thread_data *data;
-	data = (struct thread_data *) threadarg;
+	struct genome_sequences** gc = NULL;
+	struct sam_bam_entry** buffer = NULL;
+	struct hmm* hmm = NULL;
 	struct genome_interval* g_int = NULL;
-	//struct read_info** ri = data->ri;
-	struct hmm* hmm = data->hmm;
-	//struct db* db = data->db;
-	const int start = data->start;
-	const int end = data->end;
+	struct pwrite_main* pw = NULL; 
+	int thread_id = -1;
+	int num_threads = 0;
+	int num_sequences = 0;
+	int max_num_hits = 0;
+	int i,hit;
+	int start,stop;
 	
-	int i,j,c,k,f;
+	data = (struct thread_data *) threadarg;
+
+	thread_id = data->thread_id;
+
+	num_sequences = data->bsd->sb_file->num_read;
+	num_threads = data->bsd->num_threads;
+	max_num_hits = data->bsd->sb_file->max_num_hits;
+	
+	hmm = data->bsd->thread_hmm[thread_id];
+	pw = data->bsd->pw;
+	buffer = data->bsd->sb_file->buffer;
+	g_int = data->bsd->g_int_working[thread_id];
+	gc = data->bsd->gc;
+	float genome_scores[max_num_hits+1];
+	float scores[max_num_hits+1];
+	
+
+	start = 0;
+	stop = 0;
+	
+	RUN(get_start_stop_for_threads(num_threads, num_sequences,thread_id,&start,&stop));
+
+	
+	int j,c,k,f;
 	//int hit = 0;
 	//char* seq = 0;
 	char* aln = 0;
@@ -621,66 +874,56 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	
 	char* genomic_sequence = NULL;
 	int len;
-	
-	
-	//float* random_scores = malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
-	//float* genome_prior = malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
-	//float* genome_scores =  malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
-	RUNP(g_int = init_genome_interval(0,0,0));
-	//seq = malloc(sizeof(char) * 100);
-	//scores = malloc(sizeof(float)* LIST_STORE_SIZE);
-	
-	float genome_scores[LIST_STORE_SIZE+1];
-	float scores[LIST_STORE_SIZE];
 	//top_scores = malloc(sizeof(unsigned long int)* (LIST_STORE_SIZE+1));
+	LOG_MSG("Looking at %d-%d.",start,stop);
+	for(i = start;i < stop;i++){
 	
-	for(i = start;i < end;i++){
 		//hit = 0;
 		num_scores = 0;
-		if(!data->sb_file->buffer[i]->num_hits){
+		if(!buffer[i]->num_hits){
 		//	unaligned_to_sam(ri[i]);
 		}else{
 		//	hit = 0;
 			sum = prob2scaledprob(0.0);
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				
 				//DPRINTF2("%s: %d ->%d", data->sb_file->buffer[i]->name,data->sb_file->buffer[i]->start[hit],data->sb_file->buffer[i]->stop[hit] );
 				
-				genomic_sequence = data->gc[i]->genomic_sequences[c];// data->sb_file->buffer[i]->genomic_sequences[c];
-				len = data->gc[i]->g_len[c];//    data->sb_file->buffer[i]->g_len[c];
-				hmm = glocal_forward_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len ,c);
+				genomic_sequence = gc[i]->genomic_sequences[c];// data->sb_file->buffer[i]->genomic_sequences[c];
+				len = gc[i]->g_len[c];//    data->sb_file->buffer[i]->g_len[c];
+				hmm = glocal_forward_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len ,c);
 				if(!hmm){
 					
-					fprintf(stdout,"%s (%d): hit:%d %lld ->%lld\n", data->sb_file->buffer[i]->name,i,c,data->sb_file->buffer[i]->start[c],data->sb_file->buffer[i]->stop[c] );
+					fprintf(stdout,"%s (%d): hit:%d %" PRId64 " ->%" PRId64 "\n", buffer[i]->name,i,c,buffer[i]->start[c],buffer[i]->stop[c] );
 				
-					for(len = 0;len <  data->sb_file->buffer[i]->len;len++){
-						fprintf(stdout,"%d ", data->sb_file->buffer[i]->sequence[len]);
+					for(len = 0;len < buffer[i]->len;len++){
+						fprintf(stdout,"%d ", buffer[i]->sequence[len]);
 					}
 					fprintf(stdout,"\n");
-					for(len = 0;len < data->gc[i]->g_len[c];len++){
-						fprintf(stdout,"%d ", data->gc[i]->genomic_sequences[c][len]);
+					for(len = 0;len < gc[i]->g_len[c];len++){
+						fprintf(stdout,"%d ", gc[i]->genomic_sequences[c][len]);
 					}
 					fprintf(stdout,"\n");
 					//return FAIL;
 				}
 				
-				hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len, prob2scaledprob(1.0),0);
+				hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),0);
 				
 				scores[c] = hmm->score;// + ri[i]->priors[hit];
 				genome_scores[c] = hmm->random_score ;// ri[i]->priors[c];
 			
 			}
-			hmm = random_model_calc(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len , prob2scaledprob(1.0),1);
+			hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len , prob2scaledprob(1.0),1);
 			unaligned = hmm->random_score;// + prob2scaledprob(data->param->unaligned_prior);
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				unaligned += genome_scores[c];// + prob2scaledprob(1.0 - scaledprob2prob(genome_scores[c]));
 			}
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				sum = prob2scaledprob(1.0f);
-				for(j = 0; j < data->sb_file->buffer[i]->num_hits;j++){
+				for(j = 0; j < buffer[i]->num_hits;j++){
 				//for(j = 0; j < ri[i]->nhits;j++){
 					if(c == j){
 						//read is aligned at this seed position
@@ -694,7 +937,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 			
 			sum = unaligned;
 			//sum = scores[0];
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				
 				sum = logsum(sum,scores[c]);
 			}
@@ -707,7 +950,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 			
 			k = 1;
 			
-			for(c = 0; c < data->sb_file->buffer[i]->num_hits;c++){
+			for(c = 0; c < buffer[i]->num_hits;c++){
 				scores[c] = scores[c] - sum;
 				if(scores[c] > max){
 					max = scores[c];
@@ -745,7 +988,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 				
 				
 				//fprintf(stderr,"\n%s	un	%f	%f	%f\n", data->sb_file->buffer[i]->name, scaledprob2prob(unaligned),unaligned,unaligned) ;
-				for(j = 0; j < data->sb_file->buffer[i]->num_hits;j++){
+				for(j = 0; j < buffer[i]->num_hits;j++){
 					flag = 0;
 					if(scores[j]  == max){
 						if(k){
@@ -760,14 +1003,14 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 						flag = -1;
 					}
 					if(flag != -1){
-						RUN(get_chr_start_stop(data->sb_file->si,g_int,data->sb_file->buffer[i]->start[j], data->sb_file->buffer[i]->stop[j]));
+						RUN(get_chr_start_stop(data->bsd->sb_file->si,g_int,buffer[i]->start[j],buffer[i]->stop[j]));
 						g_int->start -=ALIGNMENT_FLANKING_LENGTH;
 						g_int->stop += ALIGNMENT_FLANKING_LENGTH;
 						
 						
 						//fprintf(stderr,"%s	%d	%f	%f	%d\n",data->sb_file->buffer[i]->name, j,scaledprob2prob(scores[j] ),scores[j] ,flag) ;
-						genomic_sequence = data->gc[i]->genomic_sequences[j];//  data->sb_file->buffer[i]->genomic_sequences[j];
-						len = data->gc[i]->g_len[j];//   data->sb_file->buffer[i]->g_len[j];
+						genomic_sequence = gc[i]->genomic_sequences[j];//  data->sb_file->buffer[i]->genomic_sequences[j];
+						len = gc[i]->g_len[j];//   data->sb_file->buffer[i]->g_len[j];
 						//DPRINTF2("%s ( %d)\n",genomic_sequence,len);
 						
 						
@@ -777,170 +1020,77 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 						  }*/
 						
 						
-						aln = glocal_viterbi_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len);
+						aln = glocal_viterbi_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len);
 						
 						if(!aln){
 							fprintf(stderr,"seq: %d hitNO:%d\n",i,j);
-							fprintf(stderr,"%s aligned against:\n%s %lld -%lld %d\n",data->sb_file->buffer[i]->name, g_int->chromosome,g_int->g_start,g_int->g_stop,g_int->strand);
+							fprintf(stderr,"%s aligned against:\n%s %" PRId64 " -%" PRId64 " %d\n",buffer[i]->name, g_int->chromosome,g_int->g_start,g_int->g_stop,g_int->strand);
 						}
 						
 						
 						if(g_int->strand){
 							
 							aln = reverse_path(aln);
-							RUN(reverse_complement_sequence(data->sb_file->buffer[i]->sequence , data->sb_file->buffer[i]->len));//,"revcomp failed.");
-							RUN(reverse(data->sb_file->buffer[i]->qual, data->sb_file->buffer[i]->len));//,"rev failed.");
+							RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
+							RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
 							flag |= 16;
 						}
 						if(num_scores == 1){
-							if( scaledprob2prob( scores[j]) >= data->sb_file->buffer[i]->qual){
-								scores[j] = prob2scaledprob(data->sb_file->buffer[i]->qual);
+							if( scaledprob2prob( scores[j]) >= buffer[i]->qual){
+								scores[j] = prob2scaledprob(buffer[i]->qual);
 							}
 						}
-						
-						align_to_sam(g_int, data->sb_file->buffer[i], aln, flag,scaledprob2prob( scores[j]));
+						RUN(align_to_sam(pw, g_int, buffer[i], thread_id, aln, flag,scaledprob2prob( scores[j])));
 						
 						if(g_int->strand){
 							
-							RUN(reverse_complement_sequence(data->sb_file->buffer[i]->sequence , data->sb_file->buffer[i]->len));//,"revcomp failed.");
-							RUN(reverse(data->sb_file->buffer[i]->qual, data->sb_file->buffer[i]->len));//,"rev failed.");
+							RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
+							RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
 						}
+						MFREE(aln);
 						
 					}
-					/*align_to_sam(
-						     aln,
-						     struct sam_bam_entry* sb_ptr
-						     seed_start,
-						     ri[i]->strand[j] | flag,
-						     scaledprob2prob( scores[j]),
-						     ri[i],
-						     0
-						     );*/
-					
-
-					//if(i < 10){
-					//	fprintf(stderr,"%f %d (flag...)\n",scaledprob2prob(scores[j]),flag );
-					//}
-					/*
-					
-					if(flag != -1){
-						RUN(get_chr_start_stop(data->sb_file,i,hit,g_int),"get_chr_start_stop failed");
-						g_int->start -=ALIGNMENT_FLANKING_LENGTH;
-						g_int->stop += ALIGNMENT_FLANKING_LENGTH;
-						//DPRINTF2("%s:%d-%d \n",g_int->chromosome,g_int->start,g_int->stop);
-						genomic_sequence = get_sequence(data->index,g_int);
-						len = (int) strlen(genomic_sequence);
-						RUN(ACGT_to_0123(genomic_sequence,&len),"ACGT_to_0123 failed");
-						aln = glocal_viterbi_log_Y(hmm,data->sb_file->buffer[i]->sequence,  genomic_sequence,data->sb_file->buffer[i]->len,  len);
-						aln = reverse_path(aln);
-						
-						
-						
-						if(ri[i]->strand[j] != 0){
-							//reverse_complement2(ri[i]->seq,ri[i]->len);
-							if(ri[i]->hits[j] > ALIGNMENT_FLANKING_LENGTH){
-								strand = get_sequence(db,seq,ri[i]->hits[j]-ALIGNMENT_FLANKING_LENGTH, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH,1);
-								seed_start = ri[i]->hits[j]-ALIGNMENT_FLANKING_LENGTH;
-							}else{
-								strand = get_sequence(db,seq,0, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH,1);
-								seed_start =  0;
-							}
-							seq = transform_16to5_sequence(seq , ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH);
-							//reverse_complement2(ri[i]->seq,ri[i]->len);
-							aln = glocal_viterbi_log_Y(hmm,ri[i]->seq, seq, ri[i]->len, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH);
-							aln = reverse_path(aln);
-							ri[i]->seq = reverse_complement(ri[i]->seq,ri[i]->len);
-							
-							
-							if(num_scores == 1){
-								if( scaledprob2prob( scores[j]) < ri[i]->mapq){
-									ri[i]->mapq = scaledprob2prob( scores[j]) ;
-								}
-								align_to_sam(
-									     aln,
-									     db,
-									     seed_start,
-									     ri[i]->strand[j] | flag,
-									     ri[i]->mapq,
-									     ri[i],
-									     0
-									     );
-							}else{
-								
-								align_to_sam(
-									     aln,
-									     db,
-									     seed_start,
-									     ri[i]->strand[j] | flag,
-									     scaledprob2prob( scores[j]),
-									     ri[i],
-									     0
-									     );
-							}
-							free(aln);
-							ri[i]->seq = reverse_complement(ri[i]->seq,ri[i]->len);
-						}else{
-							if(ri[i]->hits[j] > ALIGNMENT_FLANKING_LENGTH){
-								strand = get_sequence(db,seq,ri[i]->hits[j]-ALIGNMENT_FLANKING_LENGTH, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH,0);
-								seed_start = ri[i]->hits[j]-ALIGNMENT_FLANKING_LENGTH;
-							}else{
-								strand = get_sequence(db,seq,0, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH,0);
-								seed_start = 0;
-							}
-							
-							
-							//strand = get_sequence(db,seq,ri[i]->hits[j]-10, ri[i]->len+20,0);
-							seq = transform_16to5_sequence(seq , ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH);
-							
-							
-							aln = glocal_viterbi_log_Y(hmm,ri[i]->seq, seq, ri[i]->len, ri[i]->len+2*ALIGNMENT_FLANKING_LENGTH );
-							if(num_scores == 1){
-								if( scaledprob2prob( scores[j]) < ri[i]->mapq){
-									ri[i]->mapq = scaledprob2prob( scores[j]) ;
-								}
-								align_to_sam(
-									     aln,
-									     db,
-									     seed_start,
-									     ri[i]->strand[j] | flag,
-									     ri[i]->mapq,
-									     ri[i],
-									     0
-									     );
-							}else{
-								align_to_sam(
-									     aln,
-									     db,
-									     seed_start,
-									     ri[i]->strand[j] | flag,
-									     scaledprob2prob(scores[j] ),
-									     ri[i],
-									     0
-									     );
-							}
-							free(aln);
-						}
-					}*/
 				}
-				
-				
-				//for(j = 0; j < LIST_STORE_SIZE+1;j++){
-				//	top_scores[j] = 0ul;
-				//}
 			}
 		}
 	}
-	//free(random_scores);
-	//free(genome_scores);
-	//free(genome_prior);
-	//free(scores);
-	free_genome_interval(g_int);
-	//free(top_scores);
-	//free(seq);
-	pthread_exit((void *) 0);
+
+	pw->flush(pw,thread_id);	
+	
+	return NULL;
 ERROR:
-	pthread_exit((void *) 0);
+	return NULL;
 }
+
+
+int get_start_stop_for_threads(const int num_threads, const int num_seq, const int id, int *start,int *stop)
+{
+
+	int interval = 0;
+
+	if(num_threads > num_seq){
+		if(id > num_seq){
+			*start = 0;
+			*stop = 0;
+		}else{
+			*start = id;
+			*stop = id+1;
+		}
+		return OK;
+	}
+	
+	interval = num_seq / num_threads;
+	*start = id* interval;
+	*stop =  id* interval + interval;
+	LOG_MSG("Trying to spread work: %d total_threads %d.",id, num_threads);
+	if(id +1 == num_threads){
+		*stop = num_seq;
+	}
+		
+	return OK;
+}
+
+
 
 
 char* glocal_viterbi_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
@@ -1255,11 +1405,11 @@ char* glocal_viterbi_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
 				
 				fprintf(stderr,"ERROR:code: %d not found\n",tmp_tb);
 				for(i = 0; i < n;i++){
-					fprintf(stderr,"%c","ACGTN"[a[i]]);
+					fprintf(stderr,"%c","ACGTN"[(int)a[i]]);
 				}
 				fprintf(stderr,"\n");
 				for(i = 0; i < m;i++){
-					fprintf(stderr,"%c","ACGTN"[b[i]]);
+					fprintf(stderr,"%c","ACGTN"[(int)b[i]]);
 				}
 				fprintf(stderr,"\n");
 				return NULL;
@@ -1572,7 +1722,7 @@ struct hmm* glocal_backward_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
 
 struct hmm* get_prob_log_Y(struct hmm* hmm,char* a, char* b, int n,int m,float frac,int frame )
 {
-	int i,j,c,g;
+	int i,j,g;
 	char* seqa = a -1;
 	char* seqb = b -1;
 	float* prob = hmm->prob;
@@ -1596,8 +1746,7 @@ struct hmm* get_prob_log_Y(struct hmm* hmm,char* a, char* b, int n,int m,float f
 		hmm->fX = hmm->tfX[frame];
 		hmm->fY = hmm->tfY[frame];
 	}
-	
-	c = 0;
+        
 	tprob[   (EGAP << 12) | (seqb[1] << 8) | (EGAP << 4) | seqb[2]] = logsum(tprob[   (EGAP << 12) | (seqb[1] << 8) | (EGAP << 4) | seqb[2]], hmm->fY[0][2] + hmm->bY[0][2]  - hmm->score+ frac );
 	
 	for(j = 3; j <= m-2;j++){
@@ -2153,9 +2302,9 @@ int re_estimate(struct hmm* hmm)
 	//free(sum_prob);
 	//return hmm;
 	return OK;
-ERROR:
+//ERROR:
 	
-	return FAIL;
+//	return FAIL;
 }
 
 
@@ -2221,58 +2370,62 @@ ERROR:
 }
 
 
-void init_thread_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads)
+int init_thread_hmms(struct shared_data* bsd)
 {
-	int i,c;
-	for(c = 0; c < numthreads;c++){
+	int i,j,c;
+	int num_threads = 0;
+	struct hmm* master_hmm = NULL;
+	struct hmm* thread_hmm = NULL;
+	num_threads = bsd->num_threads;
+
+	master_hmm = bsd->master_hmm;
+
+	for(c = 0; c < num_threads;c++){
+		thread_hmm = bsd->thread_hmm[c];
 		for(i = 0; i < 65536;i++){
-			thread_data_array[c].hmm->prob[i] = localhmm->prob[i];
-			thread_data_array[c].hmm->tprob[i] = prob2scaledprob(0.0f);
+			thread_hmm->prob[i] = master_hmm->prob[i];
+			thread_hmm->tprob[i] = prob2scaledprob(0.0f);
 		}
 		for(i = 0; i < 25;i++){
-			thread_data_array[c].hmm->random_genome_model[i] = localhmm->random_genome_model[i];
-			thread_data_array[c].hmm->random_genome_model_t[i] = prob2scaledprob(0.0f);
-			thread_data_array[c].hmm->random_read_model[i] = localhmm->random_read_model[i];
-			thread_data_array[c].hmm->random_read_model_t[i] = prob2scaledprob(0.0f);
+			
+			thread_hmm->random_genome_model[i] = master_hmm->random_genome_model[i];
+			thread_hmm->random_genome_model_t[i] = prob2scaledprob(0.0f);
+		        thread_hmm->random_read_model[i] = master_hmm->random_read_model[i];
+		        thread_hmm->random_read_model_t[i] = prob2scaledprob(0.0f);
 			
 		}
 	}
-	
+	return OK;
 }
 
-void entangle_hmms(struct thread_data* thread_data_array,struct hmm* localhmm,int numthreads)
+
+
+int entangle_hmms(struct shared_data* bsd)
 {
 	int i,j,c;
+	int num_threads = 0;
+	struct hmm* master = NULL;
+	struct hmm* thread_hmm = NULL;
+	num_threads = bsd->num_threads;
+
+	master = bsd->master_hmm;
 	
-	//fprintf(stderr,"0:%d\n",thread_data_array[0].hmm->train_count);
-	for(i = 0; i < 65536;i++){
-		localhmm->tprob[i] = thread_data_array[0].hmm->tprob[i];
-	}
-	for(j = 0; j < 25;j++){
-		localhmm->random_genome_model_t[j] = logsum(localhmm->random_genome_model_t[j] ,thread_data_array[0].hmm->random_genome_model_t[j]);
-		localhmm->random_read_model_t[j] = logsum(localhmm->random_read_model_t[j] ,thread_data_array[0].hmm->random_read_model_t[j]);
-	}
-	for(c = 1; c < numthreads;c++){
-		
-		
-		for(i = 0; i < 65536;i++){
-			localhmm->tprob[i] = logsum(localhmm->tprob[i], thread_data_array[c].hmm->tprob[i]);
+	for(i = 0; i < num_threads;i++){
+		thread_hmm = bsd->thread_hmm[i];
+		for(j = 0; j < 65536;j++){
+			master->tprob[j] = logsum(master->tprob[j] , thread_hmm->tprob[j]);
 		}
-		/*for(i = 0; i < 31;i++){
-		 for(j = 0; j < 25;j++){
-		 localhmm->genome_model_t[i][j] = logsum(localhmm->genome_model_t[i][j] ,thread_data_array[c].hmm->genome_model_t[i][j]);
-		 }
-		 }*/
-		for(j = 0; j < 25;j++){
-			localhmm->random_genome_model_t[j] = logsum(localhmm->random_genome_model_t[j] ,thread_data_array[c].hmm->random_genome_model_t[j]);
-			localhmm->random_read_model_t[j] = logsum(localhmm->random_read_model_t[j] ,thread_data_array[c].hmm->random_read_model_t[j]);
+		for (j = 0; j < 25; j++) {
+			master->random_read_model_t[j] = logsum(master->random_read_model_t[j],thread_hmm->random_read_model_t[j]);
+			master->random_genome_model_t[j] = logsum(master->random_genome_model_t[j],thread_hmm->random_genome_model_t[j]);
 		}
 	}
+	return OK;
 }
 
 
 
-struct hmm* init_hmm(int x, int y)
+struct hmm* init_hmm(int x, int y, int z)
 {
 	struct hmm* hmm = NULL;
 	int i,j,c;
@@ -2283,6 +2436,12 @@ struct hmm* init_hmm(int x, int y)
 	y = y + 2;
 	
 	MMALLOC(hmm, sizeof(struct hmm));
+
+
+	hmm->x = x;
+	hmm->y = y;
+	hmm->num_hits = z;
+	
 	hmm->fM = NULL;// malloc(sizeof(float*)*x);
 	hmm->fX = NULL;//malloc(sizeof(float*)*x);
 	hmm->fY = NULL;//malloc(sizeof(float*)*x);
@@ -2310,9 +2469,9 @@ struct hmm* init_hmm(int x, int y)
 	hmm->tfX = NULL;//malloc(sizeof(float**)*LIST_STORE_SIZE);
 	hmm->tfY = NULL;//malloc(sizeof(float**)*LIST_STORE_SIZE);
 	
-	MMALLOC(hmm->tfM, sizeof(float**)*LIST_STORE_SIZE);
-	MMALLOC(hmm->tfX, sizeof(float**)*LIST_STORE_SIZE);
-	MMALLOC(hmm->tfY, sizeof(float**)*LIST_STORE_SIZE);
+	MMALLOC(hmm->tfM, sizeof(float**)* hmm->num_hits);
+	MMALLOC(hmm->tfX, sizeof(float**)* hmm->num_hits);
+	MMALLOC(hmm->tfY, sizeof(float**)* hmm->num_hits);
 	
 	
 	//hmm->tfM = malloc(sizeof(float**)*LIST_STORE_SIZE);
@@ -2329,13 +2488,15 @@ struct hmm* init_hmm(int x, int y)
 	MMALLOC(hmm->prob, sizeof(float) * 65536);
 	MMALLOC(hmm->tprob, sizeof(float) * 65536);
 	MMALLOC(hmm->print_prob, sizeof(float) * 65536);
+
+	for(i = 0; i < 65536;i++){
+		hmm->prob[i] = 0.0;
+		hmm->tprob[i] = 0.0;
+		hmm->print_prob[i] = 0.0;
+	}
 	
 	
-	
-	hmm->x = x;
-	hmm->y = y;
-	
-	for(i = 0; i < LIST_STORE_SIZE;i++){
+	for(i = 0; i < hmm->num_hits;i++){
 		hmm->tfM[i] = NULL;
 		hmm->tfX[i] = NULL;
 		hmm->tfY[i] = NULL;
@@ -2437,6 +2598,7 @@ struct hmm* init_hmm(int x, int y)
 		g1= (i >> 8) & 15;
 		r2 = (i >> 4) & 15;
 		g2 = i &15;
+	       
 		hmm->prob[i] = 1.0f;
 		hmm->print_prob[i] = 0.0f;
 		
@@ -2578,7 +2740,7 @@ ERROR:
 	return NULL;
 }
 
-void align_to_sam(struct genome_interval* g_int,struct sam_bam_entry* entry, char* aln,unsigned flag,float score)
+int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam_bam_entry* entry,int id, char* aln,unsigned flag,float score)
 {
 	char nuc[] = "ACGTN";
 	char cigarline[128];
@@ -2721,7 +2883,7 @@ void align_to_sam(struct genome_interval* g_int,struct sam_bam_entry* entry, cha
 		if(entry->sequence[i] == 12){
 			pseq[i] = 'N';
 		}else{
-			pseq[i] =  "ACGTN"[entry->sequence[i]];//   nuc[(int)ri->seq[i] & 3 ];
+			pseq[i] =  "ACGTN"[(int)entry->sequence[i]];//   nuc[(int)ri->seq[i] & 3 ];
 		}
 	}
 	pseq[entry->len]  = 0;
@@ -2736,48 +2898,45 @@ void align_to_sam(struct genome_interval* g_int,struct sam_bam_entry* entry, cha
 	//get_chr_pos (seq_info,(unsigned int) pos),
 	
 	if(flag & 0x100){
-		sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s",
-			entry->name,//1 QNAME Query NAME of the read or the read pair
-			flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
-			g_int->chromosome,
-			g_int->start+add +1,
-			//get_chr_name (db,(unsigned int) pos + add + 1), //3 RNAME Reference sequence NAME
-			//get_chr_pos (db,(unsigned int) pos+add +1) ,//4 POS 1-based leftmost POSition of clipped alignment
-			(int)((-10.0f * log10(score ))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
-			cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
-			"*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
-			0,//8 MPOS 1-based leftmost Mate POSition
-			0,//9 ISIZE inferred Insert SIZE
-			"*" ,//10 SEQ query SEQuence on the same strand as the reference
-			"*"//11 QUAL query QUALity (ASCII-33=Phred base quality)
-			);
+		RUN(pw->write(pw,id,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s\tNM:i:%d\tMD:Z:%s\n",
+			      entry->name,//1 QNAME Query NAME of the read or the read pair
+			      flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
+			      g_int->chromosome,
+			      g_int->start+add +1,
+			      //get_chr_name (db,(unsigned int) pos + add + 1), //3 RNAME Reference sequence NAME
+			      //get_chr_pos (db,(unsigned int) pos+add +1) ,//4 POS 1-based leftmost POSition of clipped alignment
+			      (int)((-10.0f * log10(score ))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
+			      cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
+			      "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
+			      0,//8 MPOS 1-based leftmost Mate POSition
+			      0,//9 ISIZE inferred Insert SIZE
+			      "*" ,//10 SEQ query SEQuence on the same strand as the reference
+			      "*",//11 QUAL query QUALity (ASCII-33=Phred base quality)
+			      mismatches,
+			      mdline
+			    ));
 	}else{
-		sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s",
-			entry->name,//1 QNAME Query NAME of the read or the read pair
-			flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
-			g_int->chromosome,
-			g_int->start+add +1,
-			(int)((-10.0f * log10(score))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
-			cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
-			"*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
-			0,//8 MPOS 1-based leftmost Mate POSition
-			0,//9 ISIZE inferred Insert SIZE
-			pseq ,//10 SEQ query SEQuence on the same strand as the reference
-			entry->qual//11 QUAL query QUALity (ASCII-33=Phred base quality)
-			);
+		RUN(pw->write(pw,id,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s\tNM:i:%d\tMD:Z:%s\n",
+			      entry->name,//1 QNAME Query NAME of the read or the read pair
+			      flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
+			      g_int->chromosome,
+			      g_int->start+add +1,
+			      (int)((-10.0f * log10(score))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
+			      cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
+			      "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
+			      0,//8 MPOS 1-based leftmost Mate POSition
+			      0,//9 ISIZE inferred Insert SIZE
+			      pseq ,//10 SEQ query SEQuence on the same strand as the reference
+			      entry->base_qual,//11 QUAL query QUALity (ASCII-33=Phred base quality)
+			      mismatches,
+			      mdline
+			    ));
 	}
+
 	
-	i = (int)strlen(pline);
-	pline[i] = '\t';
-	i++;
-	sprintf(pline+i,"NM:i:%d",  mismatches);
-	
-	i = (int)strlen(pline);
-	pline[i] = '\t';
-	i++;
-	sprintf(pline+i,"MD:Z:%s",  mdline);
-	
-	fprintf(stdout, "%s\n",pline);
+	return OK;
+ERROR:
+	return FAIL;
 }
 
 
@@ -2793,7 +2952,7 @@ void free_hmm(struct hmm* hmm)
 	if(hmm){
 		x = hmm->x;
 		if(hmm->tfM){
-			for(i = 0; i < LIST_STORE_SIZE;i++){
+			for(i = 0; i < hmm->num_hits;i++){
 				if(hmm->tfM[i]){
 					for(j = 0;j < x;j++){
 						MFREE(hmm->tfM[i][j]);
@@ -2804,7 +2963,7 @@ void free_hmm(struct hmm* hmm)
 			MFREE(hmm->tfM);
 		}
 		if(hmm->tfX){
-			for(i = 0; i < LIST_STORE_SIZE;i++){
+			for(i = 0; i <  hmm->num_hits;i++){
 				if(hmm->tfX[i]){
 					for(j = 0;j < x;j++){
 						MFREE(hmm->tfX[i][j]);
@@ -2815,7 +2974,7 @@ void free_hmm(struct hmm* hmm)
 			MFREE(hmm->tfX);
 		}
 		if(hmm->tfY){
-			for(i = 0; i < LIST_STORE_SIZE;i++){
+			for(i = 0; i <  hmm->num_hits;i++){
 				if(hmm->tfY[i]){
 					for(j = 0;j < x;j++){
 						MFREE(hmm->tfY[i][j]);
@@ -2931,9 +3090,13 @@ ERROR:
 	return NULL;
 }
 
-int reverse(char* p,int len)
+int reverse(uint8_t* p,int len)
 {
 	int c, i, j;
+
+	if(p[0] == '*'){
+		return OK;
+	}
 	
 	for (i = 0, j = len - 1; i < j; i++, j--)
 	{
@@ -2978,6 +3141,19 @@ int reverse_complement_sequence(char* p,int len)
 	return OK;
 }
 
+int convert_buffer_ACGT_to_0123(struct sam_bam_file* sb_file)
+
+{
+	int i;
+	for(i = 0; i < sb_file->num_read;i++){
+		RUN(ACGT_to_0123(sb_file->buffer[i]->sequence,&sb_file->buffer[i]->len));
+	}
+	return OK;
+ERROR:
+	return FAIL;
+}
+
+
 int ACGT_to_0123(char* seq,int* len)
 {
 	int i = 0;
@@ -3015,25 +3191,28 @@ int ACGT_to_0123(char* seq,int* len)
 	seq[c] = 0;
 	*len = c;
 	return OK;
-ERROR:
-	return FAIL;
 }
 
 
-int add_genome_sequences(struct sam_bam_file* sb_file,struct genome_sequences** gc, char* genome)
+int add_genome_sequences(struct shared_data* bsd)
 {
+//	faidx_t*  index = NULL;
+	struct sam_bam_file* sb_file = NULL;
+	struct genome_sequences** gc = NULL;
 	faidx_t*  index = NULL;
-
 	
 	struct genome_interval* g_int = NULL;
 
 	int i,j,len,c;
-	
-	int len_a,len_b,len_c;
-	RUNP(index = get_faidx(genome));
-	RUNP(g_int = init_genome_interval(0,0,0));	
 
 	
+	sb_file = bsd->sb_file;
+	gc = bsd->gc;
+	index = bsd->index;
+	
+	//int len_b,len_c;
+//	RUNP(index = get_faidx(genome));
+	RUNP(g_int = init_genome_interval(0,0,0));
 	for(i = 0; i < sb_file->num_read;i++){
 		for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
 			DPRINTF2("NEWHIT:");
@@ -3048,67 +3227,34 @@ int add_genome_sequences(struct sam_bam_file* sb_file,struct genome_sequences** 
 			gc[i]->genomic_sequences[j] = get_sequence(index,g_int);
 			
 			len = (int) strlen(gc[i]->genomic_sequences[j]);
-			len_b = len;
+			//len_b = len;
 //			sb_file->buffer[i]->g_len[j] = len;
 			gc[i]->g_len[j] = len;
 			//DPRINTF2("%s	(len:%d)",sb_file->buffer[i]->genomic_sequences[j],sb_file->buffer[i]->g_len[j]);
-			
-			/*if(i == 128621){
-				for(c =0; c < len;c++){
-					fprintf(stdout,"%c ",sb_file->buffer[i]->genomic_sequences[j][c]);
-				}
-				fprintf(stdout,"\n");
-
-			}*/
 
 			RUN(ACGT_to_0123(gc[i]->genomic_sequences[j] ,&len));
 			
-//			RUN(ACGT_to_0123(sb_file->buffer[i]->genomic_sequences[j] ,&len),"ACGT_to_0123 failed");
 			
-			len_c = len;
-			/*f/or(c =0; c < len;c++){
-				fprintf(stdout,"%d ",sb_file->buffer[i]->genomic_sequences[j][c]);
-				
-				
-				
-			}
-			fprintf(stdout,"\n");*/
+			//len_c = len;
 			
-			//if(i == 128621){
-			//fprintf(stdout,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
-			//}
-			
-			ASSERT(len_a == len_b,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
-			ASSERT(len_b == len_c,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
-			ASSERT(len_a == len_c,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
-
-			
+//			ASSERT(len_a == len_b,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
+//			ASSERT(len_b == len_c,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
+//			ASSERT(len_a == len_c,"%d %d %d %d %d\n",i,j, len_a,len_b,len_c);
 			for(c =0; c < len;c++){
 				ASSERT(gc[i]->genomic_sequences[j][c] < 5, "%d %d pos:%d  nuc:%d  ", i,j, c, gc[i]->genomic_sequences[j][c] ); 
-			}
-
-			
+			}		
 		}
 	}
-	
-	/*for(i = 0; i < sb_file->num_read;i++){
-		for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
-			len =sb_file->buffer[i]->g_len[j];
-			for(c =0; c < len;c++){
-				ASSERT(sb_file->buffer[i]->genomic_sequences[j][c] > 4, "");
-			}
-		}
-	}*/
 	free_genome_interval(g_int);
-	free_faidx(index);
+//	free_faidx(index);
 	return OK;
 ERROR:
 	if(g_int){
 		free_genome_interval(g_int);
 	}
-	if(index){
-		free_faidx(index);
-	}
+//	if(index){
+//		free_faidx(index);
+//	}
 	return FAIL;
 }
 
@@ -3177,10 +3323,7 @@ int clear_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits
 	}
 	
 	
-	return OK;
-ERROR:
-	return FAIL;
-		
+	return OK;		
 }
 
 
@@ -3195,15 +3338,173 @@ void free_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits
 						MFREE(gc[i]->genomic_sequences[j]);
 					}
 				}
+				MFREE(gc[i]->genomic_sequences);
 				MFREE(gc[i]->g_len);
 				MFREE(gc[i]);
 			}
 				      
 		}
+		MFREE(gc);
 	}
 }
 
 
 
+int write_sam_header(struct sam_bam_file* sb_file, FILE* out)
+{
+	int i;
+	char buffer[BUFFER_LEN];
 
+	//snprintf(buffer,BUFFER_LEN,"@HD\tVN:1.3\tSO:coordinate\n");
 
+	//fwrite(buffer, sizeof(buffer[0]),sizeof(buffer)/sizeof(buffer[0]),out);
+	
+	fprintf(out,"@HD\tVN:1.3\tSO:coordinate\n");
+	for(i = 0; i < sb_file->header->n_targets;i++){
+		fprintf(out,"@SQ\tSN:%s\tLN:%d\n", sb_file->header->target_name[i],(int)sb_file->header->target_len[i]);
+		//snprintf(buffer,BUFFER_LEN,"@SQ\tSN:%s\tLN:%d\n", sb_file->header->target_name[i],(int)sb_file->header->target_len[i]);
+		//fwrite(buffer, sizeof(buffer[0]),sizeof(buffer)/sizeof(buffer[0]),out);
+	}
+	return OK;
+}
+	
+
+struct shared_data* init_shared_data(struct parameters* param, int buffer_size)
+{
+	struct shared_data* bsd = NULL;
+	int i;
+	
+	MMALLOC(bsd,sizeof(struct shared_data));
+	bsd->param = NULL;
+	bsd->gc = NULL;
+	bsd->sb_file = NULL;
+	bsd->rtree = NULL;
+	bsd->pool = NULL;
+	bsd->index = NULL;
+	bsd->master_hmm = NULL;
+	bsd->thread_hmm = NULL;
+	bsd->g_int_working = NULL;
+	bsd->thread_forward = NULL;
+		
+	bsd->free = free_shared_data;
+	bsd->buffer_size = 0;
+	bsd->num_threads = 0;
+	bsd->num_maxhits = 0;
+	bsd->max_seq_len = 0;
+	bsd->pseudo_counts = 1.0f;
+	/* assignment  */
+	bsd->free = free_shared_data;
+	bsd->buffer_size = buffer_size;
+	bsd->num_maxhits = param->num_maxhits;
+	bsd->param = param;
+	bsd->num_threads = param->num_threads;
+
+	/* initialize mutex  */
+	pthread_mutex_init(&avail_mtx,NULL);
+	
+	/* allocation  */
+	if((bsd->pool = thr_pool_create(bsd->num_threads+1, bsd->num_threads+1, 0, 0))  ==NULL) ERROR_MSG("Creating pool thread failed.");
+	RUNP(bsd->gc = init_genome_sequences(bsd->buffer_size, bsd->num_maxhits));
+	RUNP(bsd->index = get_faidx(bsd->param->genome));
+	RUNP(bsd->pw = init_pwrite_main(param->out_file,param->num_threads,BUFFER_P_WRITE_SIZE));
+
+	MMALLOC(bsd->thread_forward,sizeof(double)* param->num_threads);
+	
+	MMALLOC(bsd->g_int_working, sizeof(struct genome_interval*) * param->num_threads);
+	for (i = 0; i < param->num_threads; i++) {
+		bsd->g_int_working[i] = NULL;
+		bsd->g_int_working[i] = init_genome_interval(0,0,0);
+	}
+	return bsd;
+ERROR:
+	if(bsd){
+		bsd->free(bsd);
+	}
+	return NULL;
+};
+
+int init_shared_data_hmms(struct shared_data* bsd)
+{
+	struct hmm* tmp_hmm = NULL;
+	int max_len = 0;
+	int num_hits = 0;
+	int i;
+	
+	ASSERT(bsd != NULL,"bsd is not allocated.");
+	ASSERT(bsd->master_hmm == NULL,"master hmm already allocated.");
+
+	
+	/* hmms need to have space for longest read sequence plus the flanking genomic regions..  */
+	max_len = bsd->max_seq_len + ALIGNMENT_FLANKING_LENGTH + ALIGNMENT_FLANKING_LENGTH; 
+	num_hits = bsd->param->num_maxhits;
+	
+	
+	
+	RUNP(tmp_hmm = init_hmm(max_len ,max_len,num_hits));
+	RUN(add_pseudo_count(tmp_hmm, bsd->pseudo_counts));
+	RUN(re_estimate(tmp_hmm));
+	bsd->master_hmm = tmp_hmm;
+	tmp_hmm = NULL;
+
+	MMALLOC(bsd->thread_hmm,sizeof(struct hmm*) * bsd->num_threads);
+	for (i = 0; i < bsd->num_threads; i++) {
+		bsd->thread_hmm[i] = NULL;
+		RUNP(tmp_hmm = init_hmm(max_len ,max_len,num_hits));
+		bsd->thread_hmm[i]  = tmp_hmm;
+		tmp_hmm = NULL;
+	}
+	
+	
+	
+	return OK;
+ERROR:
+	if(tmp_hmm){
+		free_hmm(tmp_hmm);
+	}
+	return FAIL;
+}
+
+void free_shared_data(struct shared_data* bsd)
+{
+	int i;
+	if(bsd){
+		if(bsd->g_int_working){
+			for (i = 0; i < bsd-> num_threads; i++) {
+				free_genome_interval(bsd->g_int_working[i]);
+			}
+			MFREE(bsd->g_int_working);
+		}
+		if(bsd->thread_forward){
+			MFREE(bsd->thread_forward);
+		}
+		if(bsd->master_hmm){
+			free_hmm(bsd->master_hmm);
+		}
+
+		if(bsd->thread_hmm){
+			for (i = 0; i < bsd->num_threads; i++) {
+				free_hmm(bsd->thread_hmm[i]);
+					 
+			}
+			MFREE(bsd->thread_hmm);
+		}
+
+		if(bsd->rtree){
+			bsd->rtree->free(bsd->rtree);
+		}
+		if(bsd->pool){
+			thr_pool_destroy(bsd->pool);
+		}
+		if(bsd->gc){
+			free_genome_sequences(bsd->gc ,bsd->buffer_size,bsd->num_maxhits);
+		}
+		if(bsd->index){
+			free_faidx(bsd->index);
+		}
+		if(bsd->pw){
+			bsd->pw->free(bsd->pw);
+		}
+		pthread_mutex_destroy(&avail_mtx);
+		MFREE(bsd);
+	}
+}
