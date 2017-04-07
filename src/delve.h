@@ -73,6 +73,7 @@ struct hmm{
 
 struct genome_sequences{
 	char** genomic_sequences;
+	float* priors; 
 	int* g_len;
 };
 
