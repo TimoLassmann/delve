@@ -30,15 +30,14 @@ AC_CHECK_HEADERS([stdlib.h string.h])
 LIB_TLDEVELDIR="libtldevel"
 AC_SUBST(LIB_TLDEVELDIR)
 
+AC_TYPE_UINT8_T
 AC_TYPE_INT32_T
 AC_TYPE_INT64_T
 
 AC_FUNC_MALLOC
 AC_CHECK_FUNCS([pow])
 
-
-AC_ARG_ENABLE(debugging,
-[AS_HELP_STRING([--enable-debugging],[include debugging code])
+AC_ARG_ENABLE(debugging,[AS_HELP_STRING([--enable-debugging],[include debugging code])
 AS_HELP_STRING([--enable-debugging=x],[also set diagnostics verbosity level to <x> (1-3)])],
 enable_debugging=$enableval, enable_debugging="no")
 
@@ -60,6 +59,7 @@ else
 fi
 
 ac_configure_args="$ac_configure_args PACKAGE_VERSION=$PACKAGE_VERSION   PACKAGE_NAME=$PACKAGE_NAME"
+
 AC_CONFIG_FILES([Makefile
                  src/Makefile])
 		 

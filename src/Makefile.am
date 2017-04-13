@@ -24,7 +24,25 @@ bedsim.c
 bedsim_LDADD =  ${MYLIBDIRS}
 
 delve_SOURCES = \
+delve_struct.h \
 delve.h \
-delve.c
+delve.c \
+shared_data.h \
+shared_data.c \
+genome_sequences.h \
+genome_sequences.c \
+dyn_prog.h \
+dyn_prog.c \
+thread_data.h \
+thread_data.c \
+hmm.h \
+hmm.c \
+genome_rtree.h \
+genome_rtree.c \
+genome_priors.h \
+genome_priors.c \
+io.h \
+io.c
+
 delve_LDADD =  ${MYLIBDIRS}
 
