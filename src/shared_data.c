@@ -40,8 +40,8 @@ struct shared_data* init_shared_data(struct parameters* param, int buffer_size)
 	bsd->num_threads = 0;
 	bsd->num_maxhits = 0;
 	bsd->max_seq_len = 0;
-	bsd->pseudo_counts = 1.0f;
-
+	bsd->pseudo_counts = param->pseudocounts;
+	bsd->iteration = 0;
 	/* assignment  */
 	bsd->free = free_shared_data;
 	bsd->buffer_size = buffer_size;
@@ -53,8 +53,9 @@ struct shared_data* init_shared_data(struct parameters* param, int buffer_size)
 	if((bsd->pool = thr_pool_create(bsd->num_threads+1, bsd->num_threads+1, 0, 0)) == NULL) ERROR_MSG("Creating pool thread failed.");
 	RUNP(bsd->gc = init_genome_sequences(bsd->buffer_size, bsd->num_maxhits));
 	RUNP(bsd->index = get_faidx(bsd->param->genome));
-	RUNP(bsd->pw = init_pwrite_main(param->out_file,param->num_threads,BUFFER_P_WRITE_SIZE));
 
+	//RUNP(bsd->pw = init_pwrite_main(param->out_file,param->num_threads,BUFFER_P_WRITE_SIZE));
+	bsd->pw = NULL;
 	MMALLOC(bsd->thread_forward,sizeof(double)* param->num_threads);
 	
 	MMALLOC(bsd->g_int_working, sizeof(struct genome_interval*) * param->num_threads);
@@ -97,6 +98,7 @@ void free_shared_data(struct shared_data* bsd)
 		}
 
 		if(bsd->rtree){
+		
 			bsd->rtree->free(bsd->rtree);
 		}
 		if(bsd->pool){

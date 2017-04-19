@@ -68,6 +68,22 @@ ERROR:
 	return NULL;
 }
 
+int free_delve_region_data_from_tree(struct rtr_data* rtree)
+{
+	int i;
+
+	ASSERT(rtree != NULL,"No tree");
+	LOG_MSG("cleaning tree: %d entries.",rtree->stats_num_interval);
+	for(i = 0; i < rtree->stats_num_interval;i++){
+		if(rtree->flat_interval[i]->data){
+			MFREE(rtree->flat_interval[i]->data);
+		}
+	}
+	return OK;
+ERROR:
+	return FAIL;
+}
+
 
 int set_sequence_weigth(struct shared_data* bsd)
 {
@@ -125,6 +141,9 @@ int resolve_delve_genome_region_data(struct  rtree_interval* a,struct rtree_inte
 	org->count = org->count + new->count;
 	
 	a->data = (void*) org;	
+
+	MFREE(b->data);
+	b->data = NULL;
 	return OK;
 ERROR:
 	return FAIL;

@@ -55,7 +55,7 @@ int re_estimate_genome_priors(struct shared_data* bsd)
 	for (i = 0; i < rtree->stats_num_interval; i++) {
 		dgd = (struct delve_genome_region_data*) rtree->flat_interval[i]->data;
 		dgd->prior = dgd->prior_e -sum;
-		fprintf(stdout,"%d:%d %f %f %f\n",i, dgd->count,scaledprob2prob(dgd->prior),dgd->prior_e,sum);
+//		fprintf(stdout,"%d:%d %f %f %f\n",i, dgd->count,scaledprob2prob(dgd->prior),dgd->prior_e,sum);
 		
 	}
 	
@@ -77,6 +77,8 @@ int copy_genome_priors_to_gc(struct shared_data* bsd)
 	int num_seq; 
 	
 	ASSERT(bsd != NULL,"No shared data found.");
+	ASSERT(bsd->sb_file != NULL,"No open file found");
+
 	num_seq = bsd->sb_file->num_read;
 	buffer = bsd->sb_file->buffer;
 	rtree = bsd->rtree;

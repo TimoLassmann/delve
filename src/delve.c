@@ -29,6 +29,9 @@
 
 #define OPT_NTHREAD 1
 #define OPT_OUT 2
+#define OPT_PSEUDOCOUNTS 3
+#define OPT_GSPEUDO 4
+
 
 #define STAT_ALL 0
 #define STAT_IGNORE_UNALIGNED 1 
@@ -53,7 +56,7 @@ void* do_baum_welch_thread(void *threadarg);
 void* do_score_alignments_thread_hmm(void *threadarg);
 
 
-int calculate_scores(struct hmm* hmm,struct sam_bam_entry* sam_entry, struct genome_sequences* gc);
+int calculate_scores(struct hmm* hmm,struct sam_bam_entry* sam_entry, struct genome_sequences* gc,float temperature);
 int alignment_stats(struct hmm* hmm,int num_hits, int mode);
 
 /* Function to reverse base qualities */
@@ -72,41 +75,56 @@ int main (int argc,char *argv[])
 	param->genome = NULL;
 	param->aln_infile = NULL;
 	param->hmm_file = NULL;
-	param->out_file = NULL;
+	param->outdir = NULL;
 	param->num_infiles = 0;
 	param->num_threads = 4;
 	param->num_maxhits = 10;
+	param->pseudocounts = 10.0f;
 	param->genome_pseudocounts = 1.0f;
+	param->nogp = 0;
 	
 	while (1){	
 		static struct option long_options[] ={
 			{"t",required_argument,0,OPT_NTHREAD},
-			{"out",required_argument,0,OPT_OUT},
+			{"pseudo",required_argument,0,OPT_PSEUDOCOUNTS},
+			{"gpseudo",required_argument,0,OPT_GSPEUDO},
+			{"nogp",0,0,'n'},
+			{"outdir",required_argument,0,OPT_OUT},			
 			{"help",0,0,'h'},
 			{0, 0, 0, 0}
 		};
 		
 		int option_index = 0;
-		c = getopt_long_only (argc, argv,"h",long_options, &option_index);
+		c = getopt_long_only (argc, argv,"nh",long_options, &option_index);
 		
 		if (c == -1){
 			break;
 		}
 		
 		switch(c) {
-			case OPT_NTHREAD:
-				param->num_threads = atoi(optarg);
-				break;
-			case OPT_OUT:
-				param->out_file = optarg;
-				break;
+		case OPT_PSEUDOCOUNTS:
+			param->pseudocounts = atoi(optarg);
+			break;
+		case OPT_GSPEUDO:
+			param->genome_pseudocounts =  atoi(optarg);
+			break;
+		case OPT_NTHREAD:
+			param->num_threads = atoi(optarg);
+			break;
+		case OPT_OUT:
+			param->outdir = optarg;
+			break;
+		case 'n':
+			param->nogp = 1;
+			break;
+
 		case 'h':
 			fprintf(stdout,"GAGA\n");
 			MFREE(param);
 			exit(EXIT_SUCCESS);
 			break;
-			default:
-				ERROR_MSG("not recognized");
+		default:
+			ERROR_MSG("not recognized");
 			break;
 		}
 	}
@@ -158,10 +176,15 @@ int run_delve(struct parameters* param)
 	struct shared_data* bsd = NULL;
 	
 	int buffer_size = MAXNUMQUERY;	
+
+
+
 	
 	init_logsum();
+		
+	RUNP(bsd = init_shared_data(param,buffer_size));
+
 	
-	RUNP(bsd = init_shared_data(param,buffer_size));	
 	/* 1. build rtree
 	   requires reading all alignments in file. This means that I need to open the 
 	   file, loop, close and then re-open.... 
@@ -207,22 +230,15 @@ int run_delve(struct parameters* param)
 	RUN(run_estimate_sequence_model(bsd));
 	LOG_MSG("done");	
 
-	/* "gently" add in estimation of genome priors using sumuklated annealing..  */
-	LOG_MSG("Estimate genome model");
+	RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
+	RUN(close_SAMBAMfile(bsd->sb_file));
 	
-	RUN(run_estimate_genome_model(bsd));
-        RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
-     	RUN(close_SAMBAMfile(bsd->sb_file));
-	LOG_MSG("done");	
-	
-	
-	
-	/* Generating alignments  */
-	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
 
+	/* Generating alignments  */
 	LOG_MSG("Generating alignments...");
-	RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
-	
+	RUN(set_output_file(bsd,"delve.sam"));
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
+	RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));	
 	while(1){
 		RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
 		if(!bsd->sb_file->num_read){
@@ -237,6 +253,40 @@ int run_delve(struct parameters* param)
 	
 	RUN(close_SAMBAMfile(bsd->sb_file));
 	LOG_MSG("Done.");
+
+	
+	if(param->nogp == 0){
+		/* "gently" add in estimation of genome priors using sumuklated annealing..  */
+		LOG_MSG("Estimate genome model");
+		/* need to run on all data - this way is wrong... ??? */
+		RUN(run_estimate_genome_model(bsd));
+		
+		LOG_MSG("done");	
+
+		/* Generating alignments  */
+		LOG_MSG("Generating alignments...");
+		
+		RUN(set_output_file(bsd,"delve_gp.sam"));
+		
+		
+		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
+		RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
+		while(1){
+			RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+			if(!bsd->sb_file->num_read){
+				break;
+			}
+			//LOG_MSG("read:%d",bsd->sb_file->num_read);
+			RUN(add_genome_sequences(bsd));
+			RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
+			RUN(run_score_alignments(bsd));	       
+			RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
+		}
+	
+		RUN(close_SAMBAMfile(bsd->sb_file));
+		LOG_MSG("Done.");
+	}
+	RUN(free_delve_region_data_from_tree(bsd->rtree));
 	bsd->free(bsd);
 	return OK;
 ERROR:
@@ -246,7 +296,7 @@ ERROR:
 	return FAIL;
 }
 
-int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct genome_sequences* gc)
+int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct genome_sequences* gc, float temperature)
 {
 	int i,len;
 	
@@ -256,7 +306,7 @@ int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct gen
 		hmm = glocal_forward_log_Y(hmm,sam_entry->sequence,  gc->genomic_sequences[i],sam_entry->len, len ,i);				
 		//hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),0);
 		RUN(random_model_genome_score(hmm,gc->genomic_sequences[i],len,prob2scaledprob(1.0)));
-		hmm->alignment_scores[i] = hmm->score + gc->prior[i];
+		hmm->alignment_scores[i] = hmm->score + gc->prior[i] * temperature;
 		hmm->unaligned_scores[i] = hmm->unaligned_genome_score;
 			   
 	}
@@ -379,9 +429,13 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 	 	/* copy parameters from master hmm into copies used by threads...  */
 		RUN(init_thread_hmms(bsd));
 
+		/* set temperature */
+		bsd->temperature = log10f((float) iter / (float) iterations  * 9.0f +1.0f);
+		
 		for(i = 0; i < num_threads;i++){
 			bsd->thread_forward[i] = 0.0; // (i.e P = 1.0);
 			LOG_MSG("%d score %f.",i,bsd->thread_forward[i]);
+
 		}
 		/* kick off jobs  */
 		for(i = 0; i < num_threads;i++){
@@ -415,9 +469,6 @@ int run_estimate_genome_model(struct shared_data* bsd)
 	int num_threads;
 	int status;
 	int iterations;
-
-	
-	 
 	
 	iterations = 3;
 	num_threads = bsd->param->num_threads;
@@ -429,33 +480,44 @@ int run_estimate_genome_model(struct shared_data* bsd)
         /* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
 	/* I think I should add pseudocounts  */
-	for(iter = 0 ; iter< iterations;iter++){
+	for(iter = 0 ; iter <= iterations;iter++){
 		LOG_MSG("Iteration %d.",iter);
 		RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
 		RUN(add_genome_pseudocounts(bsd));
 	 	/* copy parameters from master hmm into copies used by threads...  */
 		RUN(init_thread_hmms(bsd));
-		RUN(copy_genome_priors_to_gc(bsd));
-		
+		//RUN(copy_genome_priors_to_gc(bsd));
 
-		for(i = 0; i < num_threads;i++){
-			bsd->thread_forward[i] = 0.0; // (i.e P = 1.0);
-			LOG_MSG("%d score %f.",i,bsd->thread_forward[i]);
-		}
-		/* kick off jobs  */
-		for(i = 0; i < num_threads;i++){
-			if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
-		}
-		/* wait for all jobs to finish */
-		thr_pool_wait(bsd->pool);
+		/* set temperature */
+		bsd->temperature = log10f((float) iter / (float) iterations  * 9.0f +1.0f);
 		
-		for(i = 0; i < num_threads;i++){
-			fprintf(stderr,"%d score %f\n",i,bsd->thread_forward[i]);
-//		        LOG_MSG("%d score: %f\n", bsd->sb_file->buffer[i]->fscore);
+		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
+		while(1){
+			RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+			if(!bsd->sb_file->num_read){
+				break;
+			}
+			LOG_MSG("GP est. iter %d read:%d",iter, bsd->sb_file->num_read);
+			RUN(add_genome_sequences(bsd));
+			RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
+			RUN(copy_genome_priors_to_gc(bsd));
+
+			/* kick off jobs  */
+			for(i = 0; i < num_threads;i++){
+				if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
+			}
+
+			/* wait for all jobs to finish */
+			thr_pool_wait(bsd->pool);
+
+			/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
+			RUN(entangle_hmms(bsd));
+			RUN(entangle_genome_priors(bsd));
+			
+			RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
 		}
-		/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
-		RUN(entangle_hmms(bsd));
-		RUN(entangle_genome_priors(bsd));
+		RUN(close_SAMBAMfile(bsd->sb_file));
+       
 		
                 /* re-estimate parameters.. */
 		RUN(re_estimate(bsd->master_hmm));
@@ -463,6 +525,7 @@ int run_estimate_genome_model(struct shared_data* bsd)
 		/* re-estimate random model more... */
 		RUN(re_estimate_random(bsd->master_hmm));
 
+		LOG_MSG("re-estimate genome priors...");
 		/* re-estimate genome priors.. */
 		RUN(re_estimate_genome_priors(bsd));
 	}
@@ -488,6 +551,8 @@ int run_score_alignments(struct shared_data* bsd)
 
 	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
+
+	
 	if((status = thr_pool_queue(bsd->pool, bsd->pw->write_thread_function, bsd->pw)) == -1) fprintf(stderr,"Adding job to queue failed.");
 	/* Important! otherwise a deadlock is possible/likely... */
 	RUN(bsd->pw->write_wait(bsd->pw));
@@ -581,13 +646,13 @@ void* do_baum_welch_thread(void *threadarg)
 	struct genome_sequences** gc = NULL;
 	struct sam_bam_entry** buffer = NULL;
 	struct hmm* hmm = NULL;
+	float temperature = 1.0f;
 	int thread_id = -1;
 	int num_threads = 0;
 	int num_sequences = 0;
 	int i;
 	int start;
 	int stop;
-	int max_num_hits  = 0;
 	
 	data = (struct thread_data *) threadarg;
 
@@ -595,15 +660,13 @@ void* do_baum_welch_thread(void *threadarg)
 
 	num_sequences = data->bsd->sb_file->num_read;
 	num_threads = data->bsd->num_threads;
-	max_num_hits = data->bsd->sb_file->max_num_hits;
 	
 	hmm = data->bsd->thread_hmm[thread_id];
 	buffer = data->bsd->sb_file->buffer;
 	gc = data->bsd->gc;
-	//float scores[max_num_hits+1];// = malloc(sizeof(float)* (LIST_STORE_SIZE+1));
-	//float genome_scores[max_num_hits+1];// = malloc(sizeof(float)*  (LIST_STORE_SIZE+1));
 
-
+	temperature = data->bsd->temperature;
+	
 	start = 0;
 	stop = 0;
 	RUN(get_start_stop_for_threads(num_threads, num_sequences,thread_id,&start,&stop));
@@ -621,7 +684,7 @@ void* do_baum_welch_thread(void *threadarg)
 			//hit = 0;0
 			//sum = prob2scaledprob(0.0);
 			
-			RUN(calculate_scores(hmm, buffer[i],gc[i]));
+			RUN(calculate_scores(hmm, buffer[i],gc[i],temperature));
 			RUN(alignment_stats(hmm,buffer[i]->num_hits,STAT_IGNORE_UNALIGNED));
 			/* add max prob to thread score for bookkeeping. */
 			//fprintf(stdout,"score: best: %f\n",scores[max - sum);
@@ -672,7 +735,6 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	int thread_id = -1;
 	int num_threads = 0;
 	int num_sequences = 0;
-	int max_num_hits = 0;
 	int i,j,c,k,f;
 	int start,stop;
 	int num_scores = 0;
@@ -685,7 +747,6 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 
 	num_sequences = data->bsd->sb_file->num_read;
 	num_threads = data->bsd->num_threads;
-	max_num_hits = data->bsd->sb_file->max_num_hits;
 	
 	hmm = data->bsd->thread_hmm[thread_id];
 	pw = data->bsd->pw;
@@ -707,7 +768,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 		//	unaligned_to_sam(ri[i]);
 		}else{
 
-			RUN(calculate_scores(hmm, buffer[i],gc[i]));
+			RUN(calculate_scores(hmm, buffer[i],gc[i], 1.0)); /* temp is 1 - i.e. no effect... */
 			RUN(alignment_stats(hmm,buffer[i]->num_hits,STAT_ALL));
 		        
 			max = prob2scaledprob(0.0);

@@ -31,6 +31,8 @@ struct shared_data{
 	faidx_t*  index;
 	void (*free)(struct shared_data* bsd);
 	FILE* fptr_out;
+	float temperature;
+	int iteration;
 	int buffer_size;
 	int num_threads;
 	int num_maxhits;
@@ -59,9 +61,11 @@ struct parameters{
 	char* genome;
 	char* aln_infile;
 	char* hmm_file;
-	char* out_file;
+	char* outdir;
 
+	float pseudocounts;  
 	float genome_pseudocounts;
+	int nogp;
 	int num_infiles;
 	int num_threads;
 	int num_maxhits;

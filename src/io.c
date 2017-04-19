@@ -10,6 +10,38 @@
 
 #include "pwrite.h"
 
+
+int set_output_file(struct shared_data* bsd, char* suffix)
+{
+	struct parameters* param = NULL;
+	char buffer[BUFFER_LEN];
+
+	
+	ASSERT(bsd != NULL,"No shared data.");
+	ASSERT(suffix != NULL,"No suffix.");
+	
+	param = bsd->param;
+	
+	if(bsd->pw){
+		bsd->pw->free(bsd->pw);
+		bsd->pw = NULL;
+	}
+
+	if(param->outdir){
+		snprintf(buffer,BUFFER_LEN,"%s/%s.%s",param->outdir,basename(param->aln_infile),suffix);
+		
+	}else{
+		snprintf(buffer,BUFFER_LEN,"%s.%s",param->aln_infile,suffix);
+	}
+	
+	LOG_MSG("Set output file to: %s",buffer);
+	RUNP(bsd->pw = init_pwrite_main(buffer,param->num_threads,BUFFER_P_WRITE_SIZE));
+
+	return OK;
+ERROR:
+	return FAIL; 
+}
+
 int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam_bam_entry* entry,int id, char* aln,unsigned flag,float score)
 {
 	char nuc[] = "ACGTN";

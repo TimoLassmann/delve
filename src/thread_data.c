@@ -16,8 +16,7 @@ struct thread_data** init_thread_data(struct shared_data* bsd,int num_threads)
 		MMALLOC(td[i],sizeof(struct thread_data));
 		td[i]->thread_id = i;
 		td[i]->bsd = bsd;
-		/* kick off jobs? */
-	}
+ 	}
 	return td;
 ERROR:
 	return NULL;
