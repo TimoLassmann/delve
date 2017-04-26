@@ -29,12 +29,17 @@
 
 #define OPT_NTHREAD 1
 #define OPT_OUT 2
-#define OPT_PSEUDOCOUNTS 3
-#define OPT_GSPEUDO 4
+#define OPT_SITER 3
+#define OPT_GITER 4 
+#define OPT_PSEUDOCOUNTS 5
+#define OPT_GSPEUDO 6
 
 
 #define STAT_ALL 0
 #define STAT_IGNORE_UNALIGNED 1 
+
+/* help message */
+int print_help(char **argv);
 
 /* main function running the main steps in Sequence*/
 int run_delve(struct parameters* param);
@@ -65,10 +70,11 @@ int reverse(uint8_t* p,int len);
 /* Function to write header - should really use the htslib library for this but couldn't figure out how.. */
 int write_sam_header(struct sam_bam_file* sb_file,FILE* out);
 
-int main (int argc,char *argv[]) 
+int main (int argc, char *argv[]) 
 {		
 	struct parameters* param = NULL;
 	int i,c;
+	int tmp_val;
 	tlog.echo_build_config();
      	MMALLOC(param, sizeof(struct parameters));
 	param->infiles = NULL;
@@ -79,23 +85,29 @@ int main (int argc,char *argv[])
 	param->num_infiles = 0;
 	param->num_threads = 4;
 	param->num_maxhits = 10;
-	param->pseudocounts = 10.0f;
-	param->genome_pseudocounts = 1.0f;
+	param->pseudocounts = 10;
+	param->genome_pseudocounts = 1;
 	param->nogp = 0;
+	param->siter = 5;
+	param->giter = 5;
+	param->devel = 0;
 	
 	while (1){	
 		static struct option long_options[] ={
 			{"t",required_argument,0,OPT_NTHREAD},
-			{"pseudo",required_argument,0,OPT_PSEUDOCOUNTS},
+			{"siter",required_argument,0,OPT_SITER},
+			{"giter",required_argument,0,OPT_GITER},			
+			{"spseudo",required_argument,0,OPT_PSEUDOCOUNTS},
 			{"gpseudo",required_argument,0,OPT_GSPEUDO},
 			{"nogp",0,0,'n'},
 			{"outdir",required_argument,0,OPT_OUT},			
 			{"help",0,0,'h'},
+			{"devel",0,0,'d'},
 			{0, 0, 0, 0}
 		};
 		
 		int option_index = 0;
-		c = getopt_long_only (argc, argv,"nh",long_options, &option_index);
+		c = getopt_long_only (argc, argv,"nhd",long_options, &option_index);
 		
 		if (c == -1){
 			break;
@@ -103,13 +115,54 @@ int main (int argc,char *argv[])
 		
 		switch(c) {
 		case OPT_PSEUDOCOUNTS:
-			param->pseudocounts = atoi(optarg);
+			tmp_val = atoi(optarg);
+			if(tmp_val == 0){
+				ERROR_MSG("option spseudo cannot be zero!");
+			}
+			if(tmp_val >= 256){
+				ERROR_MSG("option spseudo cannot be greater than 256!");
+			}
+			param->pseudocounts = (uint8_t) tmp_val;
 			break;
 		case OPT_GSPEUDO:
-			param->genome_pseudocounts =  atoi(optarg);
+			tmp_val = atoi(optarg);
+			if(tmp_val == 0){
+				ERROR_MSG("option gpseudo cannot be zero!");
+			}
+			if(tmp_val >= 256){
+				ERROR_MSG("option gpseudo cannot be greater than 256!");
+			}
+			param->genome_pseudocounts =  (uint8_t) tmp_val;
+			break;
+		case OPT_SITER:
+			tmp_val = atoi(optarg);
+			if(tmp_val == 0){
+				ERROR_MSG("option siter cannot be zero!");
+			}
+			if(tmp_val >= 256){
+				ERROR_MSG("option siter cannot be greater than 256!");
+			}
+			param->siter =  (uint8_t) tmp_val;
+			break;
+		case OPT_GITER:
+			tmp_val = atoi(optarg);
+			if(tmp_val == 0){
+				ERROR_MSG("option giter cannot be zero!");
+			}
+			if(tmp_val >= 256){
+				ERROR_MSG("option giter cannot be greater than 256!");
+			}
+			param->giter = (uint8_t) tmp_val;
 			break;
 		case OPT_NTHREAD:
-			param->num_threads = atoi(optarg);
+			tmp_val = atoi(optarg);
+			if(tmp_val == 0){
+				ERROR_MSG("option thread cannot be zero!");
+			}
+			if(tmp_val >= 256){
+				ERROR_MSG("option thread cannot be greater than 256!");
+			}
+			param->num_threads = (uint8_t) tmp_val;
 			break;
 		case OPT_OUT:
 			param->outdir = optarg;
@@ -117,9 +170,11 @@ int main (int argc,char *argv[])
 		case 'n':
 			param->nogp = 1;
 			break;
-
+		case 'd':
+			param->devel = 1;
+			break;
 		case 'h':
-			fprintf(stdout,"GAGA\n");
+			RUN(print_help(argv));
 			MFREE(param);
 			exit(EXIT_SUCCESS);
 			break;
@@ -141,7 +196,9 @@ int main (int argc,char *argv[])
 	LOG_MSG("Starting run");
 	
 	if(!param->num_infiles){
-		ERROR_MSG("ks tools requires at least one input\n");
+		RUN(print_help(argv));
+		ERROR_MSG("delve requires at least one input\n");
+
 	}
 
 	for(i = 0; i < param->num_infiles;i++){
@@ -171,20 +228,36 @@ ERROR:
 	return EXIT_FAILURE;
 }
 
+int print_help(char **argv)
+{
+	//const char description[] = "Aligns HMMs to new sequences.";
+	const char usage[] = " <genome> <SAM/BAM file>";
+	fprintf(stdout,"\nUsage: %s [-options] %s\n\n",basename(argv[0]) ,usage);
+	
+	fprintf(stdout,"Options:\n\n");
+
+	//example of int option.. 
+	//printf(opt_name,BUFFER_LEN,"%c%c%s <n>",'-','-',"name");
+	
+	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--siter","Seq model training iterations." ,"[5]"  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--giter","Genome model training iterations." ,"[5]"  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--spseudo","Pseudocounts in Seq model." ,"[?]"  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--gpseudo","Pseudocount in genome modes" ,"[?]"  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--nogp","skip genome training." ,""  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--t","number of threads." ,"[4]"  );
+      	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--outdir","prefix of output directory." ,""  );
+	return OK;
+}
+
 int run_delve(struct parameters* param)
 {
 	struct shared_data* bsd = NULL;
 	
-	int buffer_size = MAXNUMQUERY;	
-
-
-
+	int buffer_size = MAXNUMQUERY;
 	
 	init_logsum();
-		
-	RUNP(bsd = init_shared_data(param,buffer_size));
-
 	
+	RUNP(bsd = init_shared_data(param,buffer_size));
 	/* 1. build rtree
 	   requires reading all alignments in file. This means that I need to open the 
 	   file, loop, close and then re-open.... 
@@ -198,7 +271,7 @@ int run_delve(struct parameters* param)
 	RUN(get_max_seq_len_from_sb_buffer(bsd->sb_file,&bsd->max_seq_len));
 	
 	RUN(close_SAMBAMfile(bsd->sb_file));
-	
+	//bsd->free(bsd);
 	/* init all HMMs; now that I have the max_seq_len... */
         /* allocate HMMs... */
 	RUN(init_shared_data_hmms(bsd));
@@ -216,10 +289,10 @@ int run_delve(struct parameters* param)
 	   Note: add_genome_sequences, specific to delve (not a library function) will convert the sequences to 0123... 
 	 */
 	RUN(add_genome_sequences(bsd));
-
+	
 	/* set weigth of allocated sequences */
 	RUN(set_sequence_weigth(bsd));
-       
+	
 	/* Estimate random models  */
 	LOG_MSG("Estimating Random model (%d)",bsd->sb_file->num_read);
 	RUN(run_estimate_random_models(bsd));
@@ -229,11 +302,10 @@ int run_delve(struct parameters* param)
 	LOG_MSG("Estimating Sequence model...");
 	RUN(run_estimate_sequence_model(bsd));
 	LOG_MSG("done");	
-
+	
 	RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
 	RUN(close_SAMBAMfile(bsd->sb_file));
 	
-
 	/* Generating alignments  */
 	LOG_MSG("Generating alignments...");
 	RUN(set_output_file(bsd,"delve.sam"));
@@ -241,11 +313,11 @@ int run_delve(struct parameters* param)
 	RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));	
 	while(1){
 		RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+		LOG_MSG("read:%d",bsd->sb_file->num_read);	
 		if(!bsd->sb_file->num_read){
 			break;
 		}
-	        //LOG_MSG("read:%d",bsd->sb_file->num_read);
-		RUN(add_genome_sequences(bsd));
+	        RUN(add_genome_sequences(bsd));
 		RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
 		RUN(run_score_alignments(bsd));	       
 		RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
@@ -253,7 +325,6 @@ int run_delve(struct parameters* param)
 	
 	RUN(close_SAMBAMfile(bsd->sb_file));
 	LOG_MSG("Done.");
-
 	
 	if(param->nogp == 0){
 		/* "gently" add in estimation of genome priors using sumuklated annealing..  */
@@ -261,13 +332,12 @@ int run_delve(struct parameters* param)
 		/* need to run on all data - this way is wrong... ??? */
 		RUN(run_estimate_genome_model(bsd));
 		
-		LOG_MSG("done");	
-
+		LOG_MSG("done");
+		
 		/* Generating alignments  */
 		LOG_MSG("Generating alignments...");
 		
 		RUN(set_output_file(bsd,"delve_gp.sam"));
-		
 		
 		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
 		RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
@@ -286,7 +356,7 @@ int run_delve(struct parameters* param)
 		RUN(close_SAMBAMfile(bsd->sb_file));
 		LOG_MSG("Done.");
 	}
-	RUN(free_delve_region_data_from_tree(bsd->rtree));
+	//RUN(free_delve_region_data_from_tree(bsd->rtree));
 	bsd->free(bsd);
 	return OK;
 ERROR:
@@ -308,7 +378,7 @@ int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct gen
 		RUN(random_model_genome_score(hmm,gc->genomic_sequences[i],len,prob2scaledprob(1.0)));
 		hmm->alignment_scores[i] = hmm->score + gc->prior[i] * temperature;
 		hmm->unaligned_scores[i] = hmm->unaligned_genome_score;
-			   
+		//fprintf(stdout,"%d %f %f\n", i, gc->prior[i], hmm->alignment_scores[i]); 	   
 	}
 	RUN(random_model_read_score(hmm, sam_entry->sequence,sam_entry->len,prob2scaledprob(1.0)));
 	//unaligned = hmm->unaligned_read_score;
@@ -380,7 +450,7 @@ int run_estimate_random_models(struct shared_data* bsd)
 
 	/* I think I should add pseudocounts  */
 
-	RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
+	RUN(add_pseudo_count(bsd->master_hmm,(float) bsd->param->pseudocounts));
 	RUN(re_estimate(bsd->master_hmm)); /*  */
 	
 	/* copy parameters from master hmm into copies used by threads...  */
@@ -414,18 +484,18 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 {
 	struct thread_data** td = NULL;
 	int i,iter;
-	int num_threads;
+	int num_threads;	
 	int status;
 	int iterations;
 
-	iterations = 3;
+	iterations = bsd->param->siter;
 	num_threads = bsd->param->num_threads;
 	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
 	/* I think I should add pseudocounts  */
 	for(iter = 0 ; iter< iterations;iter++){
 		LOG_MSG("Iteration %d.",iter);
-		RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
+		RUN(add_pseudo_count(bsd->master_hmm,(float) bsd->param->pseudocounts));
 	 	/* copy parameters from master hmm into copies used by threads...  */
 		RUN(init_thread_hmms(bsd));
 
@@ -434,7 +504,7 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 		
 		for(i = 0; i < num_threads;i++){
 			bsd->thread_forward[i] = 0.0; // (i.e P = 1.0);
-			LOG_MSG("%d score %f.",i,bsd->thread_forward[i]);
+			//LOG_MSG("%d score %f.",i,bsd->thread_forward[i]);
 
 		}
 		/* kick off jobs  */
@@ -444,10 +514,10 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 		/* wait for all jobs to finish */
 		thr_pool_wait(bsd->pool);
 		
-		for(i = 0; i < num_threads;i++){
-			fprintf(stderr,"%d score %f\n",i,bsd->thread_forward[i]);
+		//for(i = 0; i < num_threads;i++){
+			//	fprintf(stderr,"%d score %f\n",i,bsd->thread_forward[i]);
 //		        LOG_MSG("%d score: %f\n", bsd->sb_file->buffer[i]->fscore);
-		}
+		//}
 		/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
 		RUN(entangle_hmms(bsd));
 		/* re-estimate parameters.. */
@@ -470,7 +540,7 @@ int run_estimate_genome_model(struct shared_data* bsd)
 	int status;
 	int iterations;
 	
-	iterations = 3;
+	iterations = bsd->param->giter;
 	num_threads = bsd->param->num_threads;
 
 	/* init_genome priors */
@@ -482,7 +552,7 @@ int run_estimate_genome_model(struct shared_data* bsd)
 	/* I think I should add pseudocounts  */
 	for(iter = 0 ; iter <= iterations;iter++){
 		LOG_MSG("Iteration %d.",iter);
-		RUN(add_pseudo_count(bsd->master_hmm, bsd->pseudo_counts));
+		RUN(add_pseudo_count(bsd->master_hmm,(float) bsd->param->pseudocounts));
 		RUN(add_genome_pseudocounts(bsd));
 	 	/* copy parameters from master hmm into copies used by threads...  */
 		RUN(init_thread_hmms(bsd));
@@ -676,7 +746,7 @@ void* do_baum_welch_thread(void *threadarg)
 	char* genomic_sequence = NULL;
 	int c;
 	
-	LOG_MSG("thread %d : %d -%d.",thread_id,start,stop);
+	//LOG_MSG("thread %d : %d -%d.",thread_id,start,stop);
 	
 	for(i = start; i < stop;i++){
 		if(buffer[i]->num_hits){
@@ -759,7 +829,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	
 	RUN(get_start_stop_for_threads(num_threads, num_sequences,thread_id,&start,&stop));
 
-	LOG_MSG("Looking at %d-%d.",start,stop);
+//	LOG_MSG("Looking at %d-%d.",start,stop);
 	for(i = start;i < stop;i++){
 	
 		//hit = 0;
@@ -792,7 +862,8 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 			}
 			
 			if(hmm->unaligned_read_score  > max){
-			//	unaligned_to_sam(ri[i]);
+				//fprintf(stdout,"Unaligned... \n");
+				//	unaligned_to_sam(ri[i]);
 			}else{
 				for(j = 0; j < buffer[i]->num_hits;j++){
 					flag = 0;

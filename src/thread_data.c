@@ -56,7 +56,7 @@ int get_start_stop_for_threads(const int num_threads, const int num_seq, const i
 	interval = num_seq / num_threads;
 	*start = id* interval;
 	*stop =  id* interval + interval;
-	LOG_MSG("Trying to spread work: %d total_threads %d.",id, num_threads);
+//	LOG_MSG("Trying to spread work: %d total_threads %d.",id, num_threads);
 	if(id +1 == num_threads){
 		*stop = num_seq;
 	}	

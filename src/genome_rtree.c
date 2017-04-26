@@ -10,7 +10,7 @@
 
 #include "delve_struct.h"
 
-int resolve_delve_genome_region_data(struct  rtree_interval* a,struct rtree_interval* b);
+int resolve_delve_genome_region_data(void* a, void* b);
 
 
 
@@ -54,10 +54,10 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 	RUN(rtree->flatten_rtree(rtree));
 
 	
-	RUN(rtree->print_rtree(rtree,rtree->root));
-	for(i = 0; i < rtree->stats_num_interval;i++){
-		fprintf(stdout,"%d %d\n", rtree->flat_interval[i]->count,i);
-	}
+	//RUN(rtree->print_rtree(rtree,rtree->root));
+	//for(i = 0; i < rtree->stats_num_interval;i++){
+	//	fprintf(stdout,"%d %d\n", rtree->flat_interval[i]->count,i);
+	//}
 	
 	return rtree;
 ERROR:
@@ -112,22 +112,30 @@ int set_sequence_weigth(struct shared_data* bsd)
 			val[1] = buffer[i]->stop[j];
 			// int query(struct rtr_data* rtrd , int64_t* val,int32_t* identifier,int32_t* count)
 			RUNP(dgd = rtree->query(rtree,val));
-			
+			//fprintf(stdout,"count retrieved = %d\n", dgd->count);
 			tmp =  log((float) dgd->count) / (float) dgd->count;
 			if(tmp > weigth){
 				weigth = tmp;
 			}
+			if(dgd->count < 1000){
+				weigth = 1.0;
+			}else{
+				weigth = 1000.0 / (float) dgd->count; 
+			}
+			
 			gc[i]->alignment_weigth[j] =  prob2scaledprob(weigth);
+			
 		}
 	}
 	MFREE(val);
 	return OK;
+	
 ERROR:
 	MFREE(val);
 	return FAIL;
 }
 
-int resolve_delve_genome_region_data(struct  rtree_interval* a,struct rtree_interval* b)
+int resolve_delve_genome_region_data(void* a, void* b)
 {
 	struct delve_genome_region_data* org = NULL;
 	struct delve_genome_region_data* new = NULL;
@@ -135,16 +143,13 @@ int resolve_delve_genome_region_data(struct  rtree_interval* a,struct rtree_inte
 	ASSERT(a != NULL,"org interval is NULL");	
 	ASSERT(b != NULL,"new interval is NULL");
 
-	org = (struct delve_genome_region_data*) a->data;
-	new = (struct delve_genome_region_data*) b->data;
-
+	org = (struct delve_genome_region_data*) a;
+	new = (struct delve_genome_region_data*) b;
+	//fprintf(stdout,"resolving...\n");
 	org->count = org->count + new->count;
 	
-	a->data = (void*) org;	
-
-	MFREE(b->data);
-	b->data = NULL;
 	return OK;
 ERROR:
 	return FAIL;
 }
+

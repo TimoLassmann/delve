@@ -3,6 +3,8 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <string.h>
+#include <inttypes.h>
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -45,6 +47,8 @@ struct parameters {
 };
 
 int eval_sambam(struct parameters* param);
+int report_param(char* filename,FILE* fptr_out);
+
 int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param);
 
 void usage();
@@ -61,7 +65,7 @@ int main (int argc, char * argv[])
 	faidx_t*  index = NULL;
 	char* fasta_file = NULL;
 	char* mode_string = NULL;
-	tlog.echo_build_config();
+	//tlog.echo_build_config();
 
 	MMALLOC(param, sizeof(struct parameters));
 	param->mode = RUNMODE_SIM;
@@ -217,13 +221,14 @@ ERROR:
 
 void usage()
 {
-	fprintf(stdout, "Usage:   bedsim [options] <tomedb> <in.bed> -o <suffix> \n\n");
+	fprintf(stdout, "Usage: bedsim sim  <tomedb> <in.bed> -o <suffix> \n\n");
+	fprintf(stdout, "Usage: bedsim eval <XXX.bam>  \n\n");
+	
 	fprintf(stdout, "Options:\n");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-read-len","INT" ,"", "Length of simulated reads [30].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-start-error","FLT" ,"", "Error rate at 5' end [0.02].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-stop-error","FLT" ,"", "Error rate at 3' end [0.03].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-mismatch-rate","FLT" ,"", "Fraction of simulated mismatches [0.8].");
-	fprintf(stdout,"%15s%10s%7s%-30s\n","-sw","INT" ,"", "Simulate reads from +- INT start of feature [0].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-n","INT" ,"", "Number of reads to simulate [1000000].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-o","STR" ,"", "Output file name.");
 	fprintf(stdout, "\n");	
@@ -286,6 +291,7 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 	c = 0;
 	for(i = 0; i < total;i++){
 		rank_arr[i]  = (int)(rank_arr[i]  / y * (float)num_sequences);
+		//fprintf(stdout,"%d\t%f\n",i,rank_arr[i]);
 		c += rank_arr[i] ;
 	}
 	
@@ -295,25 +301,6 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 	}
 	
 	for(c = 0;c < 1;c++){
-		/*j = (int)strlen(param->outfile);
-		local_outfile = malloc(sizeof(char)*(j+9));
-		for(i = 0; i < j ;i++){
-			local_outfile[i] = param->outfile[i];
-		}
-		local_outfile[j] = '.';
-		local_outfile[j+1] = 'r';
-		local_outfile[j+2] = 'e';
-		local_outfile[j+3] = 'p';
-		local_outfile[j+4] = (char)  c + 49;
-		local_outfile[j+5] = '.';
-		local_outfile[j+6] = 'f';
-		local_outfile[j+7] = 'a';
-		local_outfile[j+8] = 0;
-		if (!(local_out_file = fopen(local_outfile , "w" ))){
-			fprintf(stderr,"Cannot open bed file '%s'\n",local_outfile);
-			exit(-1);
-		}
-		*/	
 		rank = 0;
 		
 		while(fgets(line, MAX_LINE, file)){
@@ -365,7 +352,8 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 					start = g_int->start;
 					stop = g_int->stop;
 					if(!param->window_start){
-						sim_start = (unsigned int) ( rand_r(&param->seed) % ((int)((g_int->stop-(param->sim_length+1))  - g_int->start)));
+						
+						sim_start = (unsigned int) ( rand_r(&param->seed) % ((int)(g_int->stop - g_int->start)));
 						sim_start += g_int->start;
 						g_int->start = sim_start;
 						g_int->stop = sim_start +param->sim_length;
@@ -500,6 +488,7 @@ float* shuffle_arr_r(float* arr,int n,unsigned int* seed)
 
 int eval_sambam(struct parameters* param)
 {
+	FILE* fptr_out = NULL;
 	struct sam_bam_file* sb_file = NULL;
 	struct sam_bam_entry* entry = NULL;
 	struct genome_interval* g_int = NULL;
@@ -530,14 +519,44 @@ int eval_sambam(struct parameters* param)
 			res.error[i][j] = 0;
 		}
 	}
+
+	if(my_file_exists(param->outfile) == 0){
+		RUNP(fptr_out = fopen(param->outfile, "w"));
+		fprintf(fptr_out,"Filename");
+		fprintf(fptr_out,"\tDPAR_threads");
+		fprintf(fptr_out,"\tDPAR_siter");
+		fprintf(fptr_out,"\tDPAR_giter");
+		fprintf(fptr_out,"\tDPAR_spseudo");
+		fprintf(fptr_out,"\tDPAR_gspeudo");
+		for(i = 0; i < 6;i++){
+			fprintf(fptr_out,"\tQ%d_correct",i*10);
+		}
+		for(i = 0; i < 6;i++){
+			fprintf(fptr_out,"\tQ%d_wrong",i*10);
+		}
+		for(j = 0; j < 6;j++){
+			for(i = 0; i < 6;i++){
+				fprintf(fptr_out,"\tQ%d_E%d",i*10,res.error[j][i]);
+			}
+		}
+		fprintf(fptr_out,"\n");
+		
+
+
+//	ERROR_MSG("File \"%s\" does not exist.",param->outfile);
+	}else{
+		RUNP(fptr_out = fopen(param->outfile, "a"));
+	}
+	fprintf(fptr_out,"%s",param->bedfile);
 	
+	RUN(report_param(param->bedfile,fptr_out));
 	RUNP(g_int = init_genome_interval(0,0,0));	
 
 	RUNP(g_org_int = init_genome_interval(0,0,0));	
 
 	
 	RUNP(sb_file = open_SAMBAMfile(param->bedfile,buffer_size,10,0,0));
-	echo_header(sb_file);
+	//echo_header(sb_file);
 	while(1){
 		RUN(read_SAMBAM_chunk(sb_file,1,0));
 		//DPRINTF2("read:%d",sb_file->num_read );
@@ -606,28 +625,55 @@ int eval_sambam(struct parameters* param)
 			}
 		}
 	}
+
+	c = 0;
+	for(i = 0; i < 6;i++){
+		c += res.mismapped[i];
+	}
+
 	
-	fprintf(stdout,"%d\n%d\n%f\n",res.total_mapped,res.unmapped,roundf ((float)( res.unmapped) / (float) (res.total_mapped+res.unmapped) *10000.0)/ 100.0);
+	fprintf(stdout,"%d\tTotal Mapped\n%d\tTotal unmapped\n%0.2f\tPercentage mapped\n%0.2f\tPercentage mis-mapped\n",res.total_mapped,res.unmapped,roundf ((float)( res.total_mapped) / (float) (res.total_mapped+res.unmapped) *10000.0)/ 100.0, (float) c / (float)res.total_mapped *100.0f  );
+
 	
 	for(i = 0; i < 6;i++){
 		fprintf(stdout,"%d\t",i*10);
 	}
+
 	fprintf(stdout,"mapping quality\n");
 	for(i = 0; i < 6;i++){
 		fprintf(stdout,"%d\t",res.mapped[i]);
+		fprintf(fptr_out,"\t%d",res.mapped[i]);
 	}
 	fprintf(stdout,"correctly mapped\n");
 	for(i = 0; i < 6;i++){
 		fprintf(stdout,"%d\t",res.mismapped[i]);
+		fprintf(fptr_out,"\t%d",res.mismapped[i]);
 	}
 	fprintf(stdout,"in-correctly mapped\n");
+	for(i = 0; i < 6;i++){
+		if(res.mismapped[i] == 0){
+			fprintf(stdout,"100\t");
+		}else if(res.mismapped[i] + res.mapped[i] == 0){
+			fprintf(stdout,"-1\t");
+		}else{	  
+			fprintf(stdout,"%d\t", (int)((-10.0f * log10(1.0f -  (float) res.mapped[i] / (float)(res.mapped[i] + res.mismapped[i] ) ))+0.5f));
+		}
+	}
+	fprintf(stdout,"Q estimation\n");
+
 	for(j = 0; j < 6;j++){
 		for(i = 0; i < 6;i++){
 			fprintf(stdout,"%d\t",res.error[j][i]);
+			fprintf(fptr_out,"\t%d",res.error[j][i]);
 		}
 		fprintf(stdout,"%d error\n",j);
 	}
 	RUN(close_SAMBAMfile(sb_file));
+
+	fprintf(fptr_out,"\n");
+	if(fptr_out){
+		fclose(fptr_out);
+	}
 	free_genome_interval(g_org_int);
 	free_genome_interval(g_int);
 	return OK;
@@ -636,6 +682,50 @@ ERROR:
 		RUN(close_SAMBAMfile(sb_file));
 	}
 	return FAIL;
+}
+
+int report_param(char* filename, FILE* fptr_out)
+{
+	char* ptr = NULL;
+	char* end = NULL;
+	
+	int64_t develcode = 0;
+	
+	ptr = strstr(filename,"DCODE");
+	if(ptr){
+		ptr +=5;
+		develcode = strtoull(ptr,&end,16);
+		if(develcode == 0 && end == ptr){
+			LOG_MSG("could not read a number");
+		}else if(develcode == INT64_MAX){
+			LOG_MSG("too long");
+		}else if(*end){
+			LOG_MSG("remaining: %s", end);
+		}
+		
+		fprintf(stdout,"%s\n%016jX\n",filename,develcode);	
+		fprintf(stdout,"%d\tNumber of threads\n",(int) (  develcode >>(int64_t)(8*4) & 0xFF));
+		fprintf(stdout,"%d\tsiter\n",(int) (  develcode >>(int64_t)(8*3) & 0xFF));
+		fprintf(stdout,"%d\tgiter\n",(int) (  develcode >>(int64_t)(8*2) & 0xFF));
+		fprintf(stdout,"%d\tspseudo\n",(int) (  develcode >>(int64_t)(8*1) & 0xFF));
+		fprintf(stdout,"%d\tgpseudo\n",(int) (  develcode >>(int64_t)(8*0) & 0xFF));
+
+		fprintf(fptr_out,"\t%d",(int) (  develcode >>(int64_t)(8*4) & 0xFF));
+		fprintf(fptr_out,"\t%d",(int) (  develcode >>(int64_t)(8*3) & 0xFF));
+		fprintf(fptr_out,"\t%d",(int) (  develcode >>(int64_t)(8*2) & 0xFF));
+		fprintf(fptr_out,"\t%d",(int) (  develcode >>(int64_t)(8*1) & 0xFF));
+		fprintf(fptr_out,"\t%d",(int) (  develcode >>(int64_t)(8*0) & 0xFF));
+		
+		
+	}else{
+		fprintf(fptr_out,"\t%d",-1);
+		fprintf(fptr_out,"\t%d",-1);
+		fprintf(fptr_out,"\t%d",-1);
+		fprintf(fptr_out,"\t%d",-1);
+		fprintf(fptr_out,"\t%d",-1);
+	}
+
+	return OK;
 }
 
 

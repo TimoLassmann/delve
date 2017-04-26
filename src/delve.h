@@ -17,7 +17,7 @@
 
 
 #ifdef DEBUG
-#define MAXNUMQUERY 1000
+#define MAXNUMQUERY 100000
 #else
 #define MAXNUMQUERY 1000000
 #endif

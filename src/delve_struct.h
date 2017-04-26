@@ -37,7 +37,7 @@ struct shared_data{
 	int num_threads;
 	int num_maxhits;
 	int max_seq_len; 
-	float pseudo_counts;
+	//float pseudo_counts;
 };
 
 struct genome_sequences{
@@ -63,12 +63,18 @@ struct parameters{
 	char* hmm_file;
 	char* outdir;
 
-	float pseudocounts;  
-	float genome_pseudocounts;
-	int nogp;
 	int num_infiles;
-	int num_threads;
 	int num_maxhits;
+
+	uint8_t num_threads;
+	uint8_t devel;
+	uint8_t pseudocounts;  
+	uint8_t genome_pseudocounts;
+	uint8_t siter;
+	uint8_t giter;
+	uint8_t nogp;
+	
+
 };
 
 struct hmm{

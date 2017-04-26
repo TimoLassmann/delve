@@ -40,7 +40,7 @@ struct shared_data* init_shared_data(struct parameters* param, int buffer_size)
 	bsd->num_threads = 0;
 	bsd->num_maxhits = 0;
 	bsd->max_seq_len = 0;
-	bsd->pseudo_counts = param->pseudocounts;
+	//bsd->pseudo_counts = param->pseudocounts;
 	bsd->iteration = 0;
 	/* assignment  */
 	bsd->free = free_shared_data;
@@ -97,8 +97,7 @@ void free_shared_data(struct shared_data* bsd)
 			MFREE(bsd->thread_hmm);
 		}
 
-		if(bsd->rtree){
-		
+		if(bsd->rtree){		
 			bsd->rtree->free(bsd->rtree);
 		}
 		if(bsd->pool){

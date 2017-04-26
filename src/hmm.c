@@ -503,7 +503,7 @@ int init_shared_data_hmms(struct shared_data* bsd)
 	
 	
 	RUNP(tmp_hmm = init_hmm(max_len ,max_len,num_hits));
-	RUN(add_pseudo_count(tmp_hmm, bsd->pseudo_counts));
+	RUN(add_pseudo_count(tmp_hmm,(float) bsd->param->pseudocounts));
 	RUN(re_estimate(tmp_hmm));
 	bsd->master_hmm = tmp_hmm;
 	tmp_hmm = NULL;

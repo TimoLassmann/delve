@@ -15,8 +15,8 @@ int set_output_file(struct shared_data* bsd, char* suffix)
 {
 	struct parameters* param = NULL;
 	char buffer[BUFFER_LEN];
-
-	
+	char suf_buf[BUFFER_LEN];
+	int64_t develcode;
 	ASSERT(bsd != NULL,"No shared data.");
 	ASSERT(suffix != NULL,"No suffix.");
 	
@@ -26,12 +26,25 @@ int set_output_file(struct shared_data* bsd, char* suffix)
 		bsd->pw->free(bsd->pw);
 		bsd->pw = NULL;
 	}
+	/* add additional suffix to capture parameters while developing  */
+	if(param->devel){
+		develcode = 0;
+		develcode |= ((int64_t) bsd->param->num_threads) << (int64_t)(8*4);
+		develcode |= ((int64_t)bsd->param->siter) << (int64_t)(8*3);
+		develcode |= ((int64_t)bsd->param->giter) << (int64_t)(8*2);
+		develcode |= ((int64_t)bsd->param->pseudocounts) << (int64_t)(8*1);
+		develcode |= ((int64_t)bsd->param->genome_pseudocounts) << (int64_t)(8*0);
+	        
+		snprintf(suf_buf,BUFFER_LEN,"DCODE%016jX.%s",develcode, suffix);
+	}else{
+		snprintf(suf_buf,BUFFER_LEN,"%s",suffix);
+	}
+
 
 	if(param->outdir){
-		snprintf(buffer,BUFFER_LEN,"%s/%s.%s",param->outdir,basename(param->aln_infile),suffix);
-		
+		snprintf(buffer,BUFFER_LEN,"%s/%s.%s",param->outdir,basename(param->aln_infile),suf_buf);		
 	}else{
-		snprintf(buffer,BUFFER_LEN,"%s.%s",param->aln_infile,suffix);
+		snprintf(buffer,BUFFER_LEN,"%s.%s",param->aln_infile,suf_buf);
 	}
 	
 	LOG_MSG("Set output file to: %s",buffer);
@@ -70,7 +83,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 		if((aln[i]  >> 4) != 5 && (aln[i]  & 0xF) !=5){
 			if((aln[i]  >> 4) != (aln[i]  & 0xF)){
 				g = (int)strlen(mdline);
-				sprintf(mdline+g,"%d%c",j,nuc[(aln[i]  & 0xF)]);
+				snprintf(mdline+g,128,  "%d%c",j,nuc[(aln[i]  & 0xF)]);
 				if((aln[i]  & 0xF) > 4 ){
 					
 					fprintf(stderr,"ERROR:%d	%d\n",aln[i] ,aln[i]  & 0xF) ;
@@ -103,12 +116,12 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 		}else if((aln[i]  >> 4) == 5  && (aln[i]  & 0xF) != 5){
 			if(state == 0){
 				g = (int)strlen(mdline);
-				sprintf(mdline+g,"%d^",j);
+				snprintf(mdline+g,128,"%d^",j);
 	//			fprintf(stderr,"%d	\n",j);
 				state = 1;
 			}
 			g = (int)strlen(mdline);
-			sprintf(mdline+g,"%c",nuc[(aln[i]  & 0xF )]);
+			snprintf(mdline+g,128,"%c",nuc[(aln[i]  & 0xF )]);
 			j = 0;
 			//state = 0;
 		}
@@ -116,13 +129,13 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 	
 	if(j){
 		g = (int)strlen(mdline);
-		sprintf(mdline+g,"%d",j);
+		snprintf(mdline+g,128,"%d",j);
 	//		fprintf(stderr,"%d	\n",j);
 	}
 	
 	g = (int)strlen(mdline);
 	if(!isdigit((int)  mdline[g-1])){
-		sprintf(mdline+g,"%d",0);
+		snprintf(mdline+g,128,"%d",0);
 	}
 	
 	//fprintf(stderr,"LINE:%s\n\n",mdline);
@@ -149,7 +162,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 				
 			}
 			c = (int)strlen(cigarline);
-			sprintf(cigarline+c,"%dM",j);
+			snprintf(cigarline+c,128,"%dM",j);
 			if(t ==entry->len){
 				break;
 			}
@@ -162,7 +175,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 				mismatches++;
 			}
 			c = (int)strlen(cigarline);
-			sprintf(cigarline+c,"%dI",j);
+			snprintf(cigarline+c,128,"%dI",j);
 			if(t ==entry->len){
 				break;
 			}
@@ -173,7 +186,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 				mismatches++;
 			}
 			c = (int)strlen(cigarline);
-			sprintf(cigarline+c,"%dD",j);
+			snprintf(cigarline+c,128,"%dD",j);
 		}
 		//fprintf(stderr,"%d	%s	%d	%d	%d\n",i,cigarline,aln[i]>>4, aln[i] & 0xF,add);
 	}

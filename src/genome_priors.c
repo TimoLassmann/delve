@@ -19,7 +19,7 @@ int add_genome_pseudocounts(struct shared_data* bsd)
 
 	rtree = bsd->rtree;
 
-	pseudocounts = prob2scaledprob(bsd->param->genome_pseudocounts);
+	pseudocounts = prob2scaledprob((float) bsd->param->genome_pseudocounts);
 	
 	
 	for (i = 0; i < rtree->stats_num_interval; i++) {
