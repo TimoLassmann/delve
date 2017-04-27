@@ -49,7 +49,7 @@ for (( i=18; i <= 24; i+=1 )); do
 	outname=$OUTDIR"/"$tmpfile"_LEN"$i"_ERROR"$j".fa"
 	printf "%s\n" $outname;
 	#  echo $i $j ${array[$j]} $BED $GENOME   $BED.simldshfksj ;
-	bedsim sim  $GENOME $BED -n 100000 --read-len $i --start-error ${array[$j]}   --stop-error ${array[$j]} -o $outname
+	bedsim sim  $GENOME $BED -n 1000 --read-len $i --start-error ${array[$j]}   --stop-error ${array[$j]} -o $outname
 	
 	let j++
     done	
