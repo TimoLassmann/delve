@@ -945,7 +945,6 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 						RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
 					}
 					MFREE(aln);
-					//}
 				}
 			}
 		}
