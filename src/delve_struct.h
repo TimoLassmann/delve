@@ -62,7 +62,8 @@ struct parameters{
 	char* aln_infile;
 	char* hmm_file;
 	char* outdir;
-
+	char* id;
+	
 	int num_infiles;
 	int num_maxhits;
 

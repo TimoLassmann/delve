@@ -113,15 +113,9 @@ int set_sequence_weigth(struct shared_data* bsd)
 			// int query(struct rtr_data* rtrd , int64_t* val,int32_t* identifier,int32_t* count)
 			RUNP(dgd = rtree->query(rtree,val));
 			//fprintf(stdout,"count retrieved = %d\n", dgd->count);
-			tmp =  log((float) dgd->count) / (float) dgd->count;
-			if(tmp > weigth){
-				weigth = tmp;
-			}
-			if(dgd->count < 1000){
-				weigth = 1.0;
-			}else{
-				weigth = 1000.0 / (float) dgd->count; 
-			}
+
+		        weigth = log10((float) dgd->count); 
+				//}
 			
 			gc[i]->alignment_weigth[j] =  prob2scaledprob(weigth);
 			

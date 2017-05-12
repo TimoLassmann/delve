@@ -36,6 +36,8 @@ AC_TYPE_INT64_T
 
 AC_FUNC_MALLOC
 AC_CHECK_FUNCS([pow])
+AC_CHECK_FUNCS([arc4random arc4random_uniform])
+
 
 AC_ARG_ENABLE(debugging,[AS_HELP_STRING([--enable-debugging],[include debugging code])
 AS_HELP_STRING([--enable-debugging=x],[also set diagnostics verbosity level to <x> (1-3)])],

@@ -17,7 +17,12 @@ LIBS = -lm -lpthread -lhts
 
 AM_CPPFLAGS=${MYINCDIRS} 
 
-bin_PROGRAMS =  delve bedsim
+bin_PROGRAMS =  delve bedsim run_delve
+
+run_delve_SOURCES = \
+run_delve.c
+run_delve_LDADD =  ${MYLIBDIRS}
+
 
 bedsim_SOURCES = \
 bedsim.c 

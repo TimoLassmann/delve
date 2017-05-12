@@ -8,7 +8,8 @@
 #include <getopt.h>
 #include <string.h>
 #include <inttypes.h>
-#include  <ctype.h>
+#include <ctype.h>
+#include <float.h>
 
 #include "tldevel.h"
 #include "rbtree.h"
@@ -33,7 +34,7 @@
 #define OPT_GITER 4 
 #define OPT_PSEUDOCOUNTS 5
 #define OPT_GSPEUDO 6
-
+#define OPT_ID 7
 
 #define STAT_ALL 0
 #define STAT_IGNORE_UNALIGNED 1 
@@ -51,7 +52,11 @@ int run_estimate_random_models(struct shared_data* bsd);
 int run_estimate_sequence_model(struct shared_data* bsd);
 
 /* score alignments and writed output to file */
+int generate_alignments(struct shared_data* bsd, char* suffix, int all);
 int run_score_alignments(struct shared_data* bsd);
+
+int determine_best_hit_in_case_of_equal_mapq(struct sam_bam_entry* entry, struct hmm* hmm, float max);
+
 
 /* estimate genome model */
 int run_estimate_genome_model(struct shared_data* bsd);
@@ -82,11 +87,12 @@ int main (int argc, char *argv[])
 	param->aln_infile = NULL;
 	param->hmm_file = NULL;
 	param->outdir = NULL;
+	param->id = NULL;
 	param->num_infiles = 0;
 	param->num_threads = 4;
 	param->num_maxhits = 10;
 	param->pseudocounts = 10;
-	param->genome_pseudocounts = 1;
+	param->genome_pseudocounts = 10;
 	param->nogp = 0;
 	param->siter = 5;
 	param->giter = 5;
@@ -99,8 +105,9 @@ int main (int argc, char *argv[])
 			{"giter",required_argument,0,OPT_GITER},			
 			{"spseudo",required_argument,0,OPT_PSEUDOCOUNTS},
 			{"gpseudo",required_argument,0,OPT_GSPEUDO},
-			{"nogp",0,0,'n'},
 			{"outdir",required_argument,0,OPT_OUT},			
+			{"id",required_argument,0,OPT_ID},					       
+			{"nogp",0,0,'n'},
 			{"help",0,0,'h'},
 			{"devel",0,0,'d'},
 			{0, 0, 0, 0}
@@ -167,6 +174,9 @@ int main (int argc, char *argv[])
 		case OPT_OUT:
 			param->outdir = optarg;
 			break;
+		case OPT_ID:
+			param->id = optarg;
+			break;
 		case 'n':
 			param->nogp = 1;
 			break;
@@ -183,7 +193,7 @@ int main (int argc, char *argv[])
 			break;
 		}
 	}
-
+	
 	MMALLOC(param->infiles,sizeof(char*)* (argc-optind));
 	
 	c = 0;
@@ -192,15 +202,14 @@ int main (int argc, char *argv[])
 		param->num_infiles++;
 		c++;
 	}
-
+	
 	LOG_MSG("Starting run");
 	
 	if(!param->num_infiles){
 		RUN(print_help(argv));
 		ERROR_MSG("delve requires at least one input\n");
-
 	}
-
+	
 	for(i = 0; i < param->num_infiles;i++){
 		if(my_file_exists(param->infiles[i]) == 0){
 			ERROR_MSG("file \"%s\" does not exist.",param->infiles[i] );
@@ -232,12 +241,8 @@ int print_help(char **argv)
 {
 	//const char description[] = "Aligns HMMs to new sequences.";
 	const char usage[] = " <genome> <SAM/BAM file>";
-	fprintf(stdout,"\nUsage: %s [-options] %s\n\n",basename(argv[0]) ,usage);
-	
+	fprintf(stdout,"\nUsage: %s [-options] %s\n\n",basename(argv[0]) ,usage);	
 	fprintf(stdout,"Options:\n\n");
-
-	//example of int option.. 
-	//printf(opt_name,BUFFER_LEN,"%c%c%s <n>",'-','-',"name");
 	
 	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--siter","Seq model training iterations." ,"[5]"  );
       	fprintf(stdout,"%*s%-*s: %s %s\n",3,"",MESSAGE_MARGIN-3,"--giter","Genome model training iterations." ,"[5]"  );
@@ -264,7 +269,8 @@ int run_delve(struct parameters* param)
 	   Additional : this means that max_seq_len will be recorded.. 
 	*/
         LOG_MSG("Quantifying read depth at putatitve mapping locations.");
-	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits , 0,0));
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits , 0,100));
+	
 	RUNP(bsd->rtree = build_rtree(bsd->sb_file));
 	
 	/* assign max_seq_len */
@@ -274,22 +280,22 @@ int run_delve(struct parameters* param)
 	//bsd->free(bsd);
 	/* init all HMMs; now that I have the max_seq_len... */
         /* allocate HMMs... */
-	RUN(init_shared_data_hmms(bsd));
-	
+	RUN(init_shared_data_hmms(bsd));	
 	/* 2. build model 
 	   Here I read in the first X (MAXNUMQUERY sequences and re-use them for model building 
 	   etc. I.e. I open, read and only after all models are trained I close....
 	*/
 	/* open file again - read all alignments (param "1","0") */
 	LOG_MSG("Opening alignment file...");
-	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
-     	RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,100));
+	
+
+	RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
 	RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
 	/* Retrieve all genome sequences "hit" by reads in the first SAM/BAM chunk
 	   Note: add_genome_sequences, specific to delve (not a library function) will convert the sequences to 0123... 
 	 */
 	RUN(add_genome_sequences(bsd));
-	
 	/* set weigth of allocated sequences */
 	RUN(set_sequence_weigth(bsd));
 	
@@ -305,26 +311,11 @@ int run_delve(struct parameters* param)
 	
 	RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
 	RUN(close_SAMBAMfile(bsd->sb_file));
+
+
 	
 	/* Generating alignments  */
-	LOG_MSG("Generating alignments...");
-	RUN(set_output_file(bsd,"delve.sam"));
-	RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
-	RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));	
-	while(1){
-		RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
-		LOG_MSG("read:%d",bsd->sb_file->num_read);	
-		if(!bsd->sb_file->num_read){
-			break;
-		}
-	        RUN(add_genome_sequences(bsd));
-		RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
-		RUN(run_score_alignments(bsd));	       
-		RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
-        }
-	
-	RUN(close_SAMBAMfile(bsd->sb_file));
-	LOG_MSG("Done.");
+	RUN(generate_alignments(bsd,"delve.sam",1));
 	
 	if(param->nogp == 0){
 		/* "gently" add in estimation of genome priors using sumuklated annealing..  */
@@ -335,26 +326,8 @@ int run_delve(struct parameters* param)
 		LOG_MSG("done");
 		
 		/* Generating alignments  */
-		LOG_MSG("Generating alignments...");
-		
-		RUN(set_output_file(bsd,"delve_gp.sam"));
-		
-		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
-		RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
-		while(1){
-			RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
-			if(!bsd->sb_file->num_read){
-				break;
-			}
-			//LOG_MSG("read:%d",bsd->sb_file->num_read);
-			RUN(add_genome_sequences(bsd));
-			RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
-			RUN(run_score_alignments(bsd));	       
-			RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
-		}
-	
-		RUN(close_SAMBAMfile(bsd->sb_file));
-		LOG_MSG("Done.");
+		/* Generating alignments  */
+		RUN(generate_alignments(bsd,"delve_gp.sam",1));
 	}
 	//RUN(free_delve_region_data_from_tree(bsd->rtree));
 	bsd->free(bsd);
@@ -369,15 +342,20 @@ ERROR:
 int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct genome_sequences* gc, float temperature)
 {
 	int i,len;
-	
+	float sum;
+	/* Step 0: norm genome priors - they need top sum to 1.0...  */
+	sum = prob2scaledprob(0.0f);
+	for(i = 0; i < sam_entry->num_hits;i++){
+		sum = logsum(sum, gc->prior[i]);
+	}
 	for(i = 0; i < sam_entry->num_hits;i++){
 		//genomic_sequence = gc->genomic_sequences[i];// data->sb_file->buffer[i]->genomic_sequences[c];
 		len = gc->g_len[i];//    data->sb_file->buffer[i]->g_len[c];
 		hmm = glocal_forward_log_Y(hmm,sam_entry->sequence,  gc->genomic_sequences[i],sam_entry->len, len ,i);				
 		//hmm = random_model_calc(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len, prob2scaledprob(1.0),0);
 		RUN(random_model_genome_score(hmm,gc->genomic_sequences[i],len,prob2scaledprob(1.0)));
-		hmm->alignment_scores[i] = hmm->score + gc->prior[i] * temperature;
-		hmm->unaligned_scores[i] = hmm->unaligned_genome_score;
+		hmm->alignment_scores[i] = hmm->score  + gc->prior[i]-sum * temperature;
+		hmm->unaligned_scores[i] = hmm->unaligned_genome_score + prob2scaledprob(1.0 - scaledprob2prob(gc->prior[i] - sum))*temperature;
 		//fprintf(stdout,"%d %f %f\n", i, gc->prior[i], hmm->alignment_scores[i]); 	   
 	}
 	RUN(random_model_read_score(hmm, sam_entry->sequence,sam_entry->len,prob2scaledprob(1.0)));
@@ -397,48 +375,94 @@ int alignment_stats(struct hmm* hmm,int num_hits, int mode)
 {
 	int i,j;
 	float sum = 0.0f;
-
+	
 	/* Step 1: calculate raw probability of read not aligned  */
         for(i = 0; i < num_hits;i++){
 		hmm->unaligned_read_score += hmm->unaligned_scores[i];//   genome_scores[c];// + prob2scaledprob(1.0 - scaledprob2prob(genome_scores[c]));
 	}
-
+	
 	/* Step 2: calcualte raw probability of read hitting location "i" */
 	for(i = 0; i < num_hits;i++){
 		sum = prob2scaledprob(1.0f);
+		/* add genome prior and 0.7 prior of hitting the genome at all...  */
 		for(j = 0; j < num_hits;j++){
 			if(i == j){
 				//read is aligned at this seed position
-				sum += hmm->alignment_scores[i];//  scores[j];// + genome_scores[j];
+				sum += hmm->alignment_scores[i]  ;//  scores[j];// + genome_scores[j];
 			}else{
 				sum += hmm->unaligned_scores[i];//    genome_scores[j];// + prob2scaledprob(1.0 - scaledprob2prob(genome_scores[j])) ;
 			}
 		}
-		hmm->tmp_scores[i] = sum;
-		
+		hmm->tmp_scores[i] = sum + prob2scaledprob(0.7f);		
 	}
-
-
+	
+	hmm->unaligned_read_score  = hmm->unaligned_read_score + prob2scaledprob(0.3);
+	
 	/* Ok - got the raw probabilities  */
-
 	sum = hmm->unaligned_read_score;
 	if(mode == STAT_IGNORE_UNALIGNED){ // i.e. contribution for unaligned possibility is ignored. 
 		sum = prob2scaledprob(0.0f);
 	}
+	
 	/* get sum */
 	for(i = 0; i < num_hits;i++){
-		sum = logsum(sum, hmm->tmp_scores[i]);
-			     
+		sum = logsum(sum, hmm->tmp_scores[i]);		     
 	}
+	
 	/* norm */
 	hmm->unaligned_read_score = hmm->unaligned_read_score - sum;
 	for(i = 0; i < num_hits;i++){
 		hmm->alignment_scores[i] = hmm->tmp_scores[i] - sum;
 	}
-	
 	return OK;
 }
 
+int generate_alignments(struct shared_data* bsd, char* suffix, int all)
+{
+	char buffer[BUFFER_LEN];
+       
+	ASSERT(bsd != NULL, "No shared data!");
+
+	if(suffix){
+		snprintf(buffer,BUFFER_LEN,"%s",suffix);
+	}else{
+		snprintf(buffer,BUFFER_LEN,"%s","delve.sam");
+	}
+	
+	LOG_MSG("Generating alignments...");		
+	RUN(set_output_file(bsd,buffer));
+		
+	if(all){
+		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,100));
+		RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
+		while(1){
+			RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
+			if(!bsd->sb_file->num_read){
+				break;
+			}
+			//LOG_MSG("read:%d",bsd->sb_file->num_read);
+			RUN(add_genome_sequences(bsd));
+			RUN(convert_buffer_ACGT_to_0123(bsd->sb_file));
+			RUN(run_score_alignments(bsd));	       
+			RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
+		}
+		
+		RUN(close_SAMBAMfile(bsd->sb_file));
+	}else{
+		
+		/* this assumes a file is already open....  */
+		RUN(write_sam_header(bsd->sb_file, bsd->pw->out_ptr ));
+	
+		RUN(run_score_alignments(bsd));
+			
+	}
+	LOG_MSG("Done.");
+	
+	return OK;	
+ERROR:
+	return FAIL;
+		
+}
 
 int run_estimate_random_models(struct shared_data* bsd)
 {
@@ -447,31 +471,29 @@ int run_estimate_random_models(struct shared_data* bsd)
 	int num_threads;
 	int status;
 	num_threads = bsd->param->num_threads;
-
+	
 	/* I think I should add pseudocounts  */
-
 	RUN(add_pseudo_count(bsd->master_hmm,(float) bsd->param->pseudocounts));
 	RUN(re_estimate(bsd->master_hmm)); /*  */
 	
 	/* copy parameters from master hmm into copies used by threads...  */
 	RUN(init_thread_hmms(bsd));
-
+	
 	/* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
-
-	/* kick off jobs  */
+	
+	/* kick off jobs */
 	for(i = 0; i < num_threads;i++){
         	if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread_random_model,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
 	}
 	/* wait for all jobs to finish */
 	thr_pool_wait(bsd->pool);
-
+	
 	/* entangle HMMs - copy estimated counts from thread hmm copies back into the master HMM. */
 	RUN(entangle_hmms(bsd));
 	
 	/* re-estimate parameters.. */
 	RUN(re_estimate_random(bsd->master_hmm));
-	
 	
 	free_thread_data(td,num_threads);
 	return OK;
@@ -524,6 +546,12 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 		RUN(re_estimate(bsd->master_hmm));
 		/* re-estimate random model more... */
 		RUN(re_estimate_random(bsd->master_hmm));
+
+		if(bsd->param->devel){
+			char buffer[BUFFER_LEN];
+			snprintf(buffer,BUFFER_LEN,"siter%d.delve.sam",iter+1);
+			RUN(generate_alignments(bsd, buffer,0));
+		}
 	}
 	free_thread_data(td,num_threads);
 	return OK;
@@ -550,7 +578,7 @@ int run_estimate_genome_model(struct shared_data* bsd)
         /* initialize datastructs to pass bsd (shared) and thread_id's (private)  */
 	RUNP(td = init_thread_data(bsd,num_threads));
 	/* I think I should add pseudocounts  */
-	for(iter = 0 ; iter <= iterations;iter++){
+	for(iter = 0; iter <= iterations;iter++){
 		LOG_MSG("Iteration %d.",iter);
 		RUN(add_pseudo_count(bsd->master_hmm,(float) bsd->param->pseudocounts));
 		RUN(add_genome_pseudocounts(bsd));
@@ -561,7 +589,8 @@ int run_estimate_genome_model(struct shared_data* bsd)
 		/* set temperature */
 		bsd->temperature = log10f((float) iter / (float) iterations  * 9.0f +1.0f);
 		
-		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,0));
+		RUNP(bsd->sb_file = open_SAMBAMfile(bsd->param->aln_infile,bsd->buffer_size,bsd->num_maxhits,0,100));
+	
 		while(1){
 			RUN(read_SAMBAM_chunk(bsd->sb_file,1,0));
 			if(!bsd->sb_file->num_read){
@@ -576,7 +605,6 @@ int run_estimate_genome_model(struct shared_data* bsd)
 			for(i = 0; i < num_threads;i++){
 				if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
 			}
-
 			/* wait for all jobs to finish */
 			thr_pool_wait(bsd->pool);
 
@@ -587,7 +615,8 @@ int run_estimate_genome_model(struct shared_data* bsd)
 			RUN(clear_genome_sequences(bsd->gc,bsd->buffer_size, bsd->num_maxhits));
 		}
 		RUN(close_SAMBAMfile(bsd->sb_file));
-       
+		
+			
 		
                 /* re-estimate parameters.. */
 		RUN(re_estimate(bsd->master_hmm));
@@ -598,6 +627,12 @@ int run_estimate_genome_model(struct shared_data* bsd)
 		LOG_MSG("re-estimate genome priors...");
 		/* re-estimate genome priors.. */
 		RUN(re_estimate_genome_priors(bsd));
+		if(bsd->param->devel){
+			char buffer[BUFFER_LEN];
+			snprintf(buffer,BUFFER_LEN,"giter%d.delve.sam",iter+1);
+			RUN(generate_alignments(bsd, buffer,1));
+		}
+       
 	}
 	free_thread_data(td,num_threads);
 	return OK;
@@ -782,10 +817,6 @@ void* do_baum_welch_thread(void *threadarg)
 			
 		}
 	}
-	//free_genome_interval(g_int);
-	//free(genome_scores);
-	//free(scores);
-	//free(seq);
 	return NULL;
 ERROR:
 	return NULL;
@@ -807,7 +838,7 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	int num_sequences = 0;
 	int i,j,c,k,f;
 	int start,stop;
-	int num_scores = 0;
+	
 	int flag;
        	int len;
 		
@@ -831,83 +862,90 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 
 //	LOG_MSG("Looking at %d-%d.",start,stop);
 	for(i = start;i < stop;i++){
-	
-		//hit = 0;
-		num_scores = 0;
 		if(!buffer[i]->num_hits){
-		//	unaligned_to_sam(ri[i]);
-		}else{
-
-			RUN(calculate_scores(hmm, buffer[i],gc[i], 1.0)); /* temp is 1 - i.e. no effect... */
+			RUN(unaligned_to_sam(pw,buffer[i],thread_id));
+	        }else{
+			RUN(calculate_scores(hmm, buffer[i],gc[i],1.0)); /* temp is 1 - i.e. no effect... */
 			RUN(alignment_stats(hmm,buffer[i]->num_hits,STAT_ALL));
 		        
 			max = prob2scaledprob(0.0);
+
+			//if(i >= 659 && i < 661){
+			/*if(!strncmp(buffer[i]->name,"ORG457658",9)){
+				for(c = 0; c < buffer[i]->num_hits;c++){
+					fprintf(stdout,"%s %d %d %f  %f   \n",buffer[i]->name,  i,c, scaledprob2prob(hmm->alignment_scores[c]), FLT_EPSILON);
+				}
+				}*/
 			
 			k = 1;
-			
-			for(c = 0; c < buffer[i]->num_hits;c++){
-				if(hmm->alignment_scores[c] > max){
+			f = -1;
+			for(c = 0; c < buffer[i]->num_hits;c++){				
+				if(fabs(scaledprob2prob(hmm->alignment_scores[c]) - scaledprob2prob( max)) < 1e-4){
+					k++;
+				}else if(hmm->alignment_scores[c] > max){
 					max = hmm->alignment_scores[c];
 					k = 1;
-				}else if(hmm->alignment_scores[c] == max){
-					k++;
+					f = c;
 				}
 			}
-			f = 0;
-			if(k > 1){
-				k = 0;
-				f = 1;
-			}else{
-				k = 0;
+
+			//uint32_t adler(const void* buf, size_t len)
+			
+			if(k > 2){
+				f = determine_best_hit_in_case_of_equal_mapq(buffer[i], hmm, max);
 			}
+
+			
+
+			/*if(!strncmp(buffer[i]->name,"ORG457658",9)){
+				fprintf(stdout,"K:%d F:%d\n",k,f);
+				for(c = 0; c < buffer[i]->num_hits;c++){
+					fprintf(stdout,"%s %d %d %f  %f   \n",buffer[i]->name,  i,c, scaledprob2prob(hmm->alignment_scores[c]), FLT_EPSILON);
+				}
+				}*/
+			ASSERT(f != -1,"best hit cpould not be found...");
+			
 			
 			if(hmm->unaligned_read_score  > max){
+				
+				RUN(unaligned_to_sam(pw,buffer[i],thread_id));
 				//fprintf(stdout,"Unaligned... \n");
 				//	unaligned_to_sam(ri[i]);
 			}else{
 				for(j = 0; j < buffer[i]->num_hits;j++){
-					flag = 0;
-					if(hmm->alignment_scores[j]  == max){
-						if(k){
-							if(k != f ){
-								flag |= 0x100;
-							}
-							f++;
-						}
-						/* NEEDS REVIEW - NO IDEA WHAT THIS IS  */
-					}else if(scaledprob2prob(hmm->alignment_scores[j]) > (1.0 / (double)buffer[i]->num_hits)){
-						flag |= 0x100;
-					}else{
-						flag = -1;
+					flag = 0x100;
+
+					if(j == f){
+						flag = 0;
 					}
-					if(flag != -1){
-						RUN(get_chr_start_stop(data->bsd->sb_file->si,g_int,buffer[i]->start[j],buffer[i]->stop[j]));
-						g_int->start -=ALIGNMENT_FLANKING_LENGTH;
-						g_int->stop += ALIGNMENT_FLANKING_LENGTH;
+
+					
+					//if(flag != -1){
+					RUN(get_chr_start_stop(data->bsd->sb_file->si,g_int,buffer[i]->start[j],buffer[i]->stop[j]));
+					g_int->start -=ALIGNMENT_FLANKING_LENGTH;
+					if( g_int->start < 0){
+						g_int->start = 0;
+					}
+					g_int->stop += ALIGNMENT_FLANKING_LENGTH;
 					        
-						genomic_sequence = gc[i]->genomic_sequences[j];//  data->sb_file->buffer[i]->genomic_sequences[j];
-						len = gc[i]->g_len[j];//   data->sb_file->buffer[i]->g_len[j];
+					genomic_sequence = gc[i]->genomic_sequences[j];//  data->sb_file->buffer[i]->genomic_sequences[j];
+					len = gc[i]->g_len[j];//   data->sb_file->buffer[i]->g_len[j];
 						
-						aln = glocal_viterbi_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len);
+					aln = glocal_viterbi_log_Y(hmm,buffer[i]->sequence,  genomic_sequence,buffer[i]->len,  len);
 												
-						if(g_int->strand){	
-							aln = reverse_path(aln);
-							RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
-							RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
-							flag |= 16;
-						}
-						if(num_scores == 1){
-							if( scaledprob2prob(hmm->alignment_scores[j]) >= buffer[i]->qual){
-								hmm->alignment_scores[j] = prob2scaledprob(buffer[i]->qual);
-							}
-						}
-						RUN(align_to_sam(pw, g_int, buffer[i], thread_id, aln, flag,scaledprob2prob(hmm->alignment_scores[j])));
-						if(g_int->strand){
-							RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
-							RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
-						}
-						MFREE(aln);
+					if(g_int->strand){	
+						aln = reverse_path(aln);
+						RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
+						RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
+						flag |= 16;
+					}					        
+					RUN(align_to_sam(pw, g_int, buffer[i], thread_id, aln, flag,scaledprob2prob(hmm->alignment_scores[j])));
+					if(g_int->strand){
+						RUN(reverse_complement_sequence(buffer[i]->sequence , buffer[i]->len));//,"revcomp failed.");
+						RUN(reverse(buffer[i]->base_qual, buffer[i]->len));//,"rev failed.");
 					}
+					MFREE(aln);
+					//}
 				}
 			}
 		}
@@ -916,4 +954,44 @@ void* do_score_alignments_thread_hmm(void *threadarg)
 	return NULL;
 ERROR:
 	return NULL;
+}
+
+/* This funtion activated when there are multiple hist swith equal (near equal) scores   */
+/* We need to report one hit - if we select one randomly the results will be inconsistent between runs  */
+/* If we report the first hit we will introduce bias.  */
+/* Therefore I calculate a has value of the read name and hit position and select the hit based on the value */
+/* There *shoult be* reproducibility between runs but assignment of multi-mappers will be evenly distributed.... */
+int determine_best_hit_in_case_of_equal_mapq(struct sam_bam_entry* entry, struct hmm* hmm, float max)
+{
+	char buffer[BUFFER_LEN];
+	uint32_t hash;
+	       
+	int i;
+	int k = 2;
+	int loop_counter = 42;
+	int best = -1;
+	uint32_t max2 = 0;
+
+	while(k > 1){
+		max2 = 0;
+		k = 0;
+		/* loop through hits - calculate adler for hit pos, take max...  */
+		for(i = 0; i < entry->num_hits;i++){
+			if(fabs(scaledprob2prob(hmm->alignment_scores[i]) - scaledprob2prob( max)) < 1e-4){
+				snprintf(buffer,BUFFER_LEN,"%d%s%" PRId64 "%" PRId64"\n",loop_counter+i,entry->name, entry->start[i],entry->stop[i]);
+				hash =  adler(buffer,  strlen (buffer));
+				if(hash > max2){
+					max2 = hash;
+					k = 1;
+					best = i;
+				}else if( hash == max2){ /* this detect a colision - extremely rare */
+					k++;
+				}
+				//fprintf(stdout,"%d %ud %ud\n",i,hash,max2);
+			}
+		}
+		loop_counter++;
+	}
+	//fprintf(stdout,"return best: %d\n", best);
+	return best;
 }

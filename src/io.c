@@ -34,10 +34,17 @@ int set_output_file(struct shared_data* bsd, char* suffix)
 		develcode |= ((int64_t)bsd->param->giter) << (int64_t)(8*2);
 		develcode |= ((int64_t)bsd->param->pseudocounts) << (int64_t)(8*1);
 		develcode |= ((int64_t)bsd->param->genome_pseudocounts) << (int64_t)(8*0);
-	        
-		snprintf(suf_buf,BUFFER_LEN,"DCODE%016jX.%s",develcode, suffix);
+		if(param->id){
+			snprintf(suf_buf,BUFFER_LEN,"%s.DCODE%016jX.%s",param->id,develcode, suffix);
+		}else{
+			snprintf(suf_buf,BUFFER_LEN,"DCODE%016jX.%s",develcode, suffix);
+		}		
 	}else{
-		snprintf(suf_buf,BUFFER_LEN,"%s",suffix);
+		if(param->id){
+			snprintf(suf_buf,BUFFER_LEN,"%s.%s",param->id,suffix);
+		}else{		
+			snprintf(suf_buf,BUFFER_LEN,"%s",suffix);
+		}
 	}
 
 
@@ -196,7 +203,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 		if(entry->sequence[i] == 12){
 			pseq[i] = 'N';
 		}else{
-			pseq[i] =  "ACGTN"[(int)entry->sequence[i]];//   nuc[(int)ri->seq[i] & 3 ];
+		 	pseq[i] =  "ACGTN"[(int)entry->sequence[i]];//   nuc[(int)ri->seq[i] & 3 ];
 		}
 	}
 	pseq[entry->len]  = 0;
@@ -206,11 +213,19 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 	}else{
 		score = 1.0f - score;
 	}
-	
-	//get_chr_name (seq_info,(unsigned int) pos),
+	score = (int)((-10.0f * log10(score ))+0.5f);
+
+	if(entry->num_hits == 1){
+		if((int)score > entry->qual){
+			score = entry->qual;
+		}
+	}
+       
+	//fprintf(stderr,"%d\n", (int)score);
+//get_chr_name (seq_info,(unsigned int) pos),
 	//get_chr_pos (seq_info,(unsigned int) pos),
 	
-	if(flag & 0x100){
+	/*if(flag & 0x100){
 		RUN(pw->write(pw,id,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s\tNM:i:%d\tMD:Z:%s\n",
 			      entry->name,//1 QNAME Query NAME of the read or the read pair
 			      flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
@@ -218,7 +233,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 			      g_int->start+add +1,
 			      //get_chr_name (db,(unsigned int) pos + add + 1), //3 RNAME Reference sequence NAME
 			      //get_chr_pos (db,(unsigned int) pos+add +1) ,//4 POS 1-based leftmost POSition of clipped alignment
-			      (int)((-10.0f * log10(score ))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
+			      (int)score,//5 MAPQ MAPping Quality (Phred-scaled)
 			      cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
 			      "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
 			      0,//8 MPOS 1-based leftmost Mate POSition
@@ -228,13 +243,13 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 			      mismatches,
 			      mdline
 			    ));
-	}else{
+			    }else{*/
 		RUN(pw->write(pw,id,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s\tNM:i:%d\tMD:Z:%s\n",
 			      entry->name,//1 QNAME Query NAME of the read or the read pair
 			      flag,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.)
 			      g_int->chromosome,
 			      g_int->start+add +1,
-			      (int)((-10.0f * log10(score))+0.5f),//5 MAPQ MAPping Quality (Phred-scaled)
+			      (int)score,//5 MAPQ MAPping Quality (Phred-scaled)
 			      cigarline,//6 CIGAR extended CIGAR string (operations: MIDNSHP)
 			      "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME)
 			      0,//8 MPOS 1-based leftmost Mate POSition
@@ -244,7 +259,7 @@ int align_to_sam(struct pwrite_main* pw,struct genome_interval* g_int,struct sam
 			      mismatches,
 			      mdline
 			    ));
-	}
+		//}
 
 	
 	return OK;
@@ -253,8 +268,37 @@ ERROR:
 }
 
 
+int unaligned_to_sam(struct pwrite_main* pw,struct sam_bam_entry* entry, int id)
+{
+	int i;
+	char pseq[500];
 
+	for(i = 0;i < entry->len;i++){
+		if(entry->sequence[i] == 12){
+			pseq[i] = 'N';
+		}else{
+			pseq[i] =  "ACGTN"[(int)entry->sequence[i]];//   nuc[(int)ri->seq[i] & 3 ];
+		}
+	}
+	pseq[entry->len]  = 0;
 
+        RUN(pw->write(pw,id,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s\n",
+				entry->name ,//1 QNAME Query NAME of the read or the read pair 
+				4,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.) 
+				"*",//3 RNAME Reference sequence NAME 
+				0,//4 POS 1-based leftmost POSition of clipped alignment 
+				0,//5 MAPQ MAPping Quality (Phred-scaled) 
+				"*",//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
+				"*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME) 
+				0,//8 MPOS 1-based leftmost Mate POSition 
+				0,//9 ISIZE inferred Insert SIZE 
+				pseq,//10 SEQ query SEQuence on the same strand as the reference 
+				entry->base_qual//11 QUAL query QUALity (ASCII-33=Phred base quality) 
+		    ));
+	return OK;
+ERROR:
+	return FAIL;
+}
 
 char* reverse_path(char* org )
 {

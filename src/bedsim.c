@@ -1,6 +1,11 @@
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <getopt.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <ctype.h>
 #include <string.h>
 #include <inttypes.h>
@@ -20,6 +25,8 @@
 #define OPT_INDEL 4
 #define OPT_WINDOW_START 5
 #define OPT_SERVER 6
+#define OPT_INDIR 7
+#define OPT_OUT 8
 
 #define RUNMODE_SIM 1
 #define RUNMODE_EVAL 2
@@ -29,6 +36,7 @@ struct parameters {
 	char* outfile;
 	char* bedfile;
 	char* control_file;
+	char* indir;
 	int infiles;
 	int quiet_flag;
 	int num_threads;
@@ -56,11 +64,15 @@ int mutate_sequence(char* seq,struct parameters*  param, int* errors);
 void convert_sequence(char* seq, int len);
 
 int compare_genome_interval_mapping(struct genome_interval* a, struct genome_interval* b, int* res);
-float* shuffle_arr_r(float* arr,int n,unsigned int* seed);
+float* shuffle_arr_r(float* arr,int n);
+
+char** get_files_names(char* directory, char* suffix, int* num_files);
 
 int main (int argc, char * argv[])
 {
-	int c;
+
+	struct stat st = {0};
+	int i,c;
 	struct parameters* param = NULL;
 	faidx_t*  index = NULL;
 	char* fasta_file = NULL;
@@ -81,7 +93,8 @@ int main (int argc, char * argv[])
 	param->window_start = 0;
 	param->sim_numseq = 1000000;
 	param->server = 0;
-	param->seed = (unsigned int) (time(NULL) * (42));
+
+	param->indir = NULL;
 	while (1){
 		static struct option long_options[] ={
 			{"read-len",required_argument,0,OPT_READLEN},
@@ -90,13 +103,15 @@ int main (int argc, char * argv[])
 			{"mismatch-rate",required_argument,0,OPT_INDEL},
 			{"sw",required_argument,0,OPT_WINDOW_START},
 			{"server",0,0,OPT_SERVER},
+			{"in",required_argument,0,OPT_INDIR},
+			{"out",required_argument,0,OPT_OUT},
 			{"quiet",required_argument,0,'q'},
 			{"help",0,0,'h'},
 			{0, 0, 0, 0}
 		};
 		
 		int option_index = 0;
-		c = getopt_long_only (argc, argv,"o:qhn:",long_options, &option_index);
+		c = getopt_long_only (argc, argv,"qhn:",long_options, &option_index);
 		
 		if (c == -1){
 			break;
@@ -104,6 +119,9 @@ int main (int argc, char * argv[])
 		
 		switch(c) {
 		case 0:
+			break;
+		case OPT_INDIR:
+			param->indir = optarg;
 			break;
 		case OPT_SERVER:
 			param->server = 1;
@@ -130,7 +148,7 @@ int main (int argc, char * argv[])
 			}
 			param->sim_numseq = atoi(optarg);
 			break;
-		case 'o':
+		case OPT_OUT:
 			if(optarg[0] == '-'){
 				fprintf(stderr,"option -o requires an argument\n");
 				exit(-1);
@@ -163,12 +181,16 @@ int main (int argc, char * argv[])
 	}
 	/* 0. there is an outfile */
 	if(param->outfile == NULL){
+		usage();
 		ERROR_MSG("No outfile (-o) given.");
 	}
 
 	mode_string= argv[optind++];
 	/* 1. mode  */
 
+	
+
+	
 	param->mode = -1;
 	if(strncmp(mode_string,"sim",3) == 0){
 		param->mode = RUNMODE_SIM;
@@ -183,6 +205,7 @@ int main (int argc, char * argv[])
 		param->bedfile = argv[optind++];
 		/* 3. is bedfile there and readable */
 		if(my_file_exists(param->bedfile) == 0){
+			usage();
 			ERROR_MSG("File \"%s\" does not exist.",param->bedfile);
 		}
 		RUN(simulate_reads_from_bed(index,param));
@@ -191,11 +214,45 @@ int main (int argc, char * argv[])
 		param->mode = RUNMODE_EVAL;
 		LOG_MSG("Running in eval mode.");
 
-		param->bedfile = argv[optind++];
-		if(my_file_exists(param->bedfile) == 0){
-			ERROR_MSG("File \"%s\" does not exist.",param->bedfile);
+		if(param->indir){
+			if(stat(param->indir, &st) == -1) {
+				ERROR_MSG("Directory %s does not  exists.", param->indir);
+			}
+			char** input_files = 0;
+			int num_input_files = 0;
+
+			/* Step 0 - find input files...  */
+	
+			RUNP(input_files = get_files_names(param->indir,".bam",&num_input_files));
+			for(i = 0; i < num_input_files;i++){
+				LOG_MSG("Working on :%s",input_files[i]);
+				param->bedfile = input_files[i];
+				RUN(eval_sambam(param));
+			}
+
+			for(i = 0; i < num_input_files;i++){
+				MFREE(input_files[i]);
+			}
+			MFREE(input_files);
+			input_files = NULL;
+			num_input_files= 0;
+			RUNP(input_files = get_files_names(param->indir,".sam",&num_input_files));
+			for(i = 0; i < num_input_files;i++){
+				param->bedfile = input_files[i];
+				RUN(eval_sambam(param));
+			}
+
+			for(i = 0; i < num_input_files;i++){
+				MFREE(input_files[i]);
+			}
+			MFREE(input_files);
+		}else{
+			param->bedfile = argv[optind++];
+			if(my_file_exists(param->bedfile) == 0){
+				ERROR_MSG("File \"%s\" does not exist.",param->bedfile);
+			}
+			RUN(eval_sambam(param));
 		}
-		RUN(eval_sambam(param));
 	}	
 	if(param->mode  == -1){
 		ERROR_MSG("Mode \"%s\" not found", mode_string);
@@ -221,9 +278,7 @@ ERROR:
 
 void usage()
 {
-	fprintf(stdout, "Usage: bedsim sim  <tomedb> <in.bed> -o <suffix> \n\n");
-	fprintf(stdout, "Usage: bedsim eval <XXX.bam>  \n\n");
-	
+	fprintf(stdout, "Usage 1: bedsim sim  <tomedb> <in.bed> -o <suffix> \n\n");
 	fprintf(stdout, "Options:\n");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-read-len","INT" ,"", "Length of simulated reads [30].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-start-error","FLT" ,"", "Error rate at 5' end [0.02].");
@@ -231,7 +286,15 @@ void usage()
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-mismatch-rate","FLT" ,"", "Fraction of simulated mismatches [0.8].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-n","INT" ,"", "Number of reads to simulate [1000000].");
 	fprintf(stdout,"%15s%10s%7s%-30s\n","-o","STR" ,"", "Output file name.");
+	fprintf(stdout, "\n");
+	
+	fprintf(stdout, "Usage 2: bedsim eval <XXX.bam>  \n\n");
+	fprintf(stdout, "Options:\n");
+	fprintf(stdout,"%15s%10s%7s%-30s\n","-in","STR" ,"", "Input directory.");
+	fprintf(stdout,"%15s%10s%7s%-30s\n","-out","STR" ,"", "Output file..");
 	fprintf(stdout, "\n");	
+
+	
 }
 
 int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
@@ -281,7 +344,7 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 	for(i = 0; i < total;i++){
 		rank_arr[i] = i+1;
 	}
-	RUNP(rank_arr = shuffle_arr_r(rank_arr ,total,&param->seed));
+	RUNP(rank_arr = shuffle_arr_r(rank_arr ,total));
 	y = 0.0;
 	for(i = 0; i < total;i++){
 		rank_arr[i] = (float)rank_arr[i] / (  pow((float) rank_arr[i], 1.2f + ((float) ((int)rank_arr[i] % (int)(total+1)) / total)));
@@ -296,7 +359,7 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 	}
 	
 	while(c < num_sequences){
-		rank_arr[(int) rand_r(&param->seed) % (int)total]++;
+		rank_arr[random_int_zero_to_x(total-1)]++;
 		c++;
 	}
 	
@@ -353,12 +416,12 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 					stop = g_int->stop;
 					if(!param->window_start){
 						
-						sim_start = (unsigned int) ( rand_r(&param->seed) % ((int)(g_int->stop - g_int->start)));
+						sim_start = random_int_zero_to_x(g_int->stop - g_int->start);
 						sim_start += g_int->start;
 						g_int->start = sim_start;
 						g_int->stop = sim_start +param->sim_length;
 				        }else{
-						sim_start = (unsigned int) (rand_r(&param->seed) %((int)(2*param->window_start)));
+						sim_start = random_int_zero_to_x(2*param->window_start);
 						
 						if(!strand){
 							sim_start = sim_start - param->window_start;
@@ -435,19 +498,20 @@ int mutate_sequence(char* seq,struct parameters*  param,int* errors)
 				local_c += param->sim_GG_error_addition;
 			}
 		}
-		if((float)rand_r(&param->seed)/ (float) RAND_MAX  <= (float)(j+1)* a +b + local_c){
+		
+		if(random_float_zero_to_x(1.0)  <= (float)(j+1)* a +b + local_c){
 			*errors = *errors + 1;
-			if((float)rand_r(&param->seed)/(float)RAND_MAX  <=  param->sim_mismatch_prob){
-				subc = alphabet[(int)rand_r(&param->seed)  % (4)];
+			if(random_float_zero_to_x(1.0)  <=  param->sim_mismatch_prob){
+				subc = alphabet[(int) random_int_zero_to_x(3)];
 				while(subc == seq[j]){
-					subc = alphabet[(int)rand_r(&param->seed)  % (4)]; //subc = alphabet[random_int(4)];
+					subc = alphabet[random_int_zero_to_x(3)]; //subc = alphabet[random_int(4)];
 				}
 				tmp_seq[c] = subc;
 				c++;
 //				fprintf(stderr,"MISMATCH\n");
 			}else{
-				if(rand_r(&param->seed) <= 0.5f){
-					tmp_seq[c] = alphabet[(int)rand_r(&param->seed)  % (4)];
+				if(random_float_zero_to_x(1.0)  <= 0.5f){
+					tmp_seq[c] = alphabet[random_int_zero_to_x(3)];
 					c++;
 					tmp_seq[c] = seq[j];
 					c++;
@@ -468,14 +532,15 @@ int mutate_sequence(char* seq,struct parameters*  param,int* errors)
 	return OK;
 }
 
-float* shuffle_arr_r(float* arr,int n,unsigned int* seed)
+float* shuffle_arr_r(float* arr,int n)
 {
 	int i,j;
 	float tmp;
 	
 	
 	for (i = 0; i < n - 1; i++) {
-		j = i +  (int) (rand_r(seed) % (int) (n-i));
+		j = i + random_int_zero_to_x(n-i); 
+		//j = i +  (int) (rand_r(seed) % (int) (n-i));
 		tmp = arr[j];
 		arr[j] = arr[i];
 		arr[i] = tmp;
@@ -497,8 +562,9 @@ int eval_sambam(struct parameters* param)
 		int mapped[6];
 		int mismapped[6];
 		int error[6][6];
+		int total;
 		int total_mapped;
-		int unmapped;
+		int total_unmapped;
 	} res;
 	int buffer_size = 1000000;
 	int i = 0;
@@ -507,11 +573,16 @@ int eval_sambam(struct parameters* param)
 	int comparison = 0;
 	int real_error = 0;
 	char c = 0;
+	float tmp = 0.0f;
 
+       	
 
+	
 	/* Init res */
-	res.unmapped = 0;
+	res.total = 0;
 	res.total_mapped = 0;
+	res.total_unmapped = 0;
+
 	for(i = 0; i < 6;i++){
 		res.mapped[i] = 0;
 		res.mismapped[i] = 0;
@@ -565,11 +636,10 @@ int eval_sambam(struct parameters* param)
 		if(!sb_file->num_read){
 			break;
 		}
-		res.total_mapped +=sb_file->num_read;
-		res.unmapped += sb_file->total_entries_in_file - sb_file->num_read;
+		res.total += sb_file->num_read;
 		for(i = 0; i < sb_file->num_read;i++){
 			entry = sb_file->buffer[i];
-	
+			
 			/*	 	int64_t* start;
 			int64_t* stop;
 			char* sequence;
@@ -583,6 +653,7 @@ int eval_sambam(struct parameters* param)
 
 			
 			if(entry->num_hits){
+				res.total_mapped++;
 				g_int->g_start = entry->start[0];
 				g_int->g_stop = entry->stop[0];
 				//fprintf(outfile,">ORG_%s_%d_%d_%c_%d\n%s\n",g_int->chromosome,g_int->start,g_int->stop, "+-"[g_int->strand],errors,seq);
@@ -630,9 +701,15 @@ int eval_sambam(struct parameters* param)
 	for(i = 0; i < 6;i++){
 		c += res.mismapped[i];
 	}
+	res.total_unmapped = res.total - res.total_mapped;
+       
+	fprintf(stdout,"%d\tTotal\n", res.total);
+	fprintf(stdout,"%d\tMapped\n", res.total_mapped);
+	fprintf(stdout,"%d\tUn-mapped\n", res.total_unmapped);
 
+	fprintf(stdout,"%f\tPercentage mapped\n", roundf((float)res.total_mapped / (float) res.total) * 100.0f);
+	fprintf(stdout,"%f\tPercentage mis-mapped\n", roundf((float)c  / (float) res.total) * 100.0f);
 	
-	fprintf(stdout,"%d\tTotal Mapped\n%d\tTotal unmapped\n%0.2f\tPercentage mapped\n%0.2f\tPercentage mis-mapped\n",res.total_mapped,res.unmapped,roundf ((float)( res.total_mapped) / (float) (res.total_mapped+res.unmapped) *10000.0)/ 100.0, (float) c / (float)res.total_mapped *100.0f  );
 
 	
 	for(i = 0; i < 6;i++){
@@ -655,8 +732,9 @@ int eval_sambam(struct parameters* param)
 			fprintf(stdout,"100\t");
 		}else if(res.mismapped[i] + res.mapped[i] == 0){
 			fprintf(stdout,"-1\t");
-		}else{	  
-			fprintf(stdout,"%d\t", (int)((-10.0f * log10(1.0f -  (float) res.mapped[i] / (float)(res.mapped[i] + res.mismapped[i] ) ))+0.5f));
+		}else{
+			tmp = (float) res.mismapped[i] / (float)(res.mapped[i] + res.mismapped[i]);
+			fprintf(stdout,"%d\t", (int)(-10.0f * log10(tmp)));
 		}
 	}
 	fprintf(stdout,"Q estimation\n");
@@ -746,3 +824,65 @@ int compare_genome_interval_mapping(struct genome_interval* a, struct genome_int
 }
 
 
+char** get_files_names(char* directory, char* suffix, int* num_files)
+{
+	char** list = NULL;
+	char cwd[BUFFER_LEN];
+	ASSERT(directory !=NULL," directory is NULL");
+	ASSERT(suffix != NULL, "suffix is NULL");
+	ASSERT(strlen(suffix) >1, "suffic is too short: %s", suffix);
+	
+	DIR *dp;
+	struct dirent *entry;
+	struct stat statbuf;
+	int len;
+
+	int malloc_len = 16;
+
+	MMALLOC(list,sizeof(char*) * malloc_len); 
+	
+	*num_files = 0;
+	
+        //get current directory...
+	RUNP(getcwd(cwd, sizeof(cwd)));
+	//open directory in question to count number of files...
+	RUNP(dp = opendir(directory));
+	
+	if(chdir(directory)){
+		ERROR_MSG("chdir failed.");
+	}
+	
+	while((entry = readdir(dp)) != NULL) {
+		lstat(entry->d_name,&statbuf);
+		if(S_ISDIR(statbuf.st_mode)) {
+			/* Found a directory, but ignore . and .. */
+			if(strcmp(".",entry->d_name) == 0 ||
+			   strcmp("..",entry->d_name) == 0)
+				continue;
+		}else{
+			if(!strcmp(suffix, entry->d_name+ (strlen(entry->d_name) - strlen(suffix)))){
+				if(*num_files == malloc_len){
+					malloc_len = malloc_len <<2;
+
+
+					MREALLOC(list, sizeof(char*) * malloc_len);
+				}
+				//fprintf(stdout,"%p List\n", list);
+				list[ *num_files] = NULL;
+				len = strlen(entry->d_name)+strlen(directory)  +2;
+				MMALLOC(list[ *num_files], sizeof(char) *len);
+				snprintf(list[*num_files],len,"%s/%s",directory,entry->d_name);
+			        *num_files = *num_files + 1;
+			}
+		}
+	}
+	if(closedir(dp)){
+		ERROR_MSG("closedir failed.");
+	}
+	if(chdir(cwd)){
+		ERROR_MSG("chdir failed.");
+	}
+	return list;
+ERROR:
+	return NULL;
+}
