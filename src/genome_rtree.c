@@ -95,7 +95,6 @@ int set_sequence_weigth(struct shared_data* bsd)
 	int i,j;
 	int num_seq; 
 	float weigth = 0.0;
-	float tmp;
 	
 	ASSERT(bsd != NULL,"No shared data found.");
 	num_seq = bsd->sb_file->num_read;
@@ -113,9 +112,11 @@ int set_sequence_weigth(struct shared_data* bsd)
 			// int query(struct rtr_data* rtrd , int64_t* val,int32_t* identifier,int32_t* count)
 			RUNP(dgd = rtree->query(rtree,val));
 			//fprintf(stdout,"count retrieved = %d\n", dgd->count);
-
-		        weigth = log10((float) dgd->count); 
-				//}
+			if(dgd->count >= 10){
+				weigth = 1.0f / log10((float) dgd->count); 
+			}else{
+				weigth = 1.0f;
+			}
 			
 			gc[i]->alignment_weigth[j] =  prob2scaledprob(weigth);
 			

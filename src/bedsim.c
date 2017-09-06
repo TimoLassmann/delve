@@ -60,13 +60,17 @@ int report_param(char* filename,FILE* fptr_out);
 int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param);
 
 void usage();
-int mutate_sequence(char* seq,struct parameters*  param, int* errors);
+char*  mutate_sequence(char* seq,struct parameters*  param, int* errors);
 void convert_sequence(char* seq, int len);
 
 int compare_genome_interval_mapping(struct genome_interval* a, struct genome_interval* b, int* res);
 float* shuffle_arr_r(float* arr,int n);
 
 char** get_files_names(char* directory, char* suffix, int* num_files);
+
+static int str_cmp(const void * a, const void* b);
+
+
 
 int main (int argc, char * argv[])
 {
@@ -224,6 +228,8 @@ int main (int argc, char * argv[])
 			/* Step 0 - find input files...  */
 	
 			RUNP(input_files = get_files_names(param->indir,".bam",&num_input_files));
+			/* qsort array.  */
+			qsort(input_files,num_input_files,sizeof(char*), str_cmp); 
 			for(i = 0; i < num_input_files;i++){
 				LOG_MSG("Working on :%s",input_files[i]);
 				param->bedfile = input_files[i];
@@ -354,7 +360,7 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 	c = 0;
 	for(i = 0; i < total;i++){
 		rank_arr[i]  = (int)(rank_arr[i]  / y * (float)num_sequences);
-		//fprintf(stdout,"%d\t%f\n",i,rank_arr[i]);
+//		fprintf(stdout,"%d\t%f\n",i,rank_arr[i]);
 		c += rank_arr[i] ;
 	}
 	
@@ -439,7 +445,7 @@ int simulate_reads_from_bed(faidx_t*  index ,struct parameters* param)
 					DPRINTF3("lookign for: %s:%d-%d %c",g_int->chromosome,g_int->start,g_int->stop, "+-"[g_int->strand]);
 					seq = get_sequence(index,g_int);
 					errors = 0;
-					RUN(mutate_sequence(seq,param ,&errors));
+					RUNP(seq = mutate_sequence(seq,param ,&errors));
 
 					fprintf(outfile,">ORG%d_%s_%d_%d_%c_%d\n%s\n",seq_num, g_int->chromosome,g_int->start,g_int->stop, "+-"[g_int->strand],errors,seq);
 					seq_num++;
@@ -478,13 +484,20 @@ void convert_sequence(char* seq, int len)
 
 
 
-int mutate_sequence(char* seq,struct parameters*  param,int* errors)
+char* mutate_sequence(char* seq,struct parameters*  param,int* errors)
 {
 	int j,c;
-	char tmp_seq[MAX_LINE];
+	
 	char alphabet[] = "ACGTN";
 	float a,b, local_c;
 	char subc;
+	char* tmp_seq = NULL;
+	char* ptr;
+	int local_len = 64;
+
+	MMALLOC(tmp_seq,sizeof(char) * local_len);
+	
+
 	
 	b  = ((param->sim_end_error - ((float)param->sim_length *  param->sim_start_error)) / (float)(param->sim_length -1)) * -1.0f;
 
@@ -506,13 +519,26 @@ int mutate_sequence(char* seq,struct parameters*  param,int* errors)
 				while(subc == seq[j]){
 					subc = alphabet[random_int_zero_to_x(3)]; //subc = alphabet[random_int(4)];
 				}
+				if(c == local_len){
+					local_len = local_len << 1;
+					MREALLOC(tmp_seq,sizeof(char) * local_len);
+				}
+		
 				tmp_seq[c] = subc;
 				c++;
 //				fprintf(stderr,"MISMATCH\n");
 			}else{
 				if(random_float_zero_to_x(1.0)  <= 0.5f){
+					if(c == local_len){
+						local_len = local_len << 1;
+						MREALLOC(tmp_seq,sizeof(char) * local_len);
+					}
 					tmp_seq[c] = alphabet[random_int_zero_to_x(3)];
 					c++;
+					if(c == local_len){
+						local_len = local_len << 1;
+						MREALLOC(tmp_seq,sizeof(char) * local_len);
+					}
 					tmp_seq[c] = seq[j];
 					c++;
 //						fprintf(stderr,"INSERT\n");
@@ -521,29 +547,43 @@ int mutate_sequence(char* seq,struct parameters*  param,int* errors)
 				}
 			}
 		}else{
+			if(c == local_len){
+				local_len = local_len << 1;
+				MREALLOC(tmp_seq,sizeof(char) * local_len);
+			}
 			tmp_seq[c] = seq[j];
 			c++;
 		}
 	}
-	for(j = 0; j < c;j++){
-		seq[j] = tmp_seq[j];
+
+	if(c == local_len){
+		local_len = local_len << 1;
+		MREALLOC(tmp_seq,sizeof(char) * local_len);
 	}
-	seq[c] = 0;
-	return OK;
+		
+	tmp_seq[c] = 0;
+	MFREE(seq);
+	return tmp_seq;
+ERROR:
+	return NULL;
 }
 
 float* shuffle_arr_r(float* arr,int n)
 {
-	int i,j;
+	int i,j,c;
 	float tmp;
 	
-	
-	for (i = 0; i < n - 1; i++) {
-		j = i + random_int_zero_to_x(n-i); 
-		//j = i +  (int) (rand_r(seed) % (int) (n-i));
-		tmp = arr[j];
-		arr[j] = arr[i];
-		arr[i] = tmp;
+
+	for(c = 0; c < n*3;c++){
+		
+		i = random_int_zero_to_x(n-1);
+		j = random_int_zero_to_x(n-1);
+		if(i != j){
+			tmp = arr[j];
+			arr[j] = arr[i];
+			arr[i] = tmp;
+
+		}			
 	}
 	return arr;
 }
@@ -572,6 +612,7 @@ int eval_sambam(struct parameters* param)
 	int norm_qual = 0;
 	int comparison = 0;
 	int real_error = 0;
+	int sum = 0;
 	char c = 0;
 	float tmp = 0.0f;
 
@@ -669,7 +710,8 @@ int eval_sambam(struct parameters* param)
 //				fprintf(stdout,"%s\n%s\t%d\t%d\t%c\n", entry->name,g_int->chromosome,g_int->start,g_int->stop, "+-"[g_int->strand]);
 //				fprintf(stdout,"%s\t%d\t%d\t%c\n", g_org_int->chromosome,g_org_int->start,g_org_int->stop, "+-"[g_org_int->strand]);
 //				fprintf(stdout,"%d %f\n",entry->qual, (roundf((float) entry->qual /10.0)));
-				norm_qual =  roundf((float) entry->qual /10.0);
+				
+				norm_qual =   entry->qual /10;
 				if(norm_qual > 5){
 					norm_qual = 5;
 				}
@@ -681,6 +723,7 @@ int eval_sambam(struct parameters* param)
 				if(comparison < 5){ /* distance criteria to declare a match */
 					comparison = 1;
 				}else{
+					//	fprintf(stdout,"%s\t%d\n",entry->name,entry->num_hits );
 					comparison = 0;
 				}
 				/* record stars */
@@ -688,6 +731,7 @@ int eval_sambam(struct parameters* param)
 					res.mapped[norm_qual]++;
 					res.error[real_error][norm_qual]++;
 				}else{
+					
 					res.mismapped[norm_qual]++;
 				}
 				
@@ -697,9 +741,10 @@ int eval_sambam(struct parameters* param)
 		}
 	}
 
-	c = 0;
+	sum = 0;
 	for(i = 0; i < 6;i++){
-		c += res.mismapped[i];
+		fprintf(stdout,"%d sum:%d\n",res.mismapped[i],c);
+		sum += res.mismapped[i];
 	}
 	res.total_unmapped = res.total - res.total_mapped;
        
@@ -707,26 +752,40 @@ int eval_sambam(struct parameters* param)
 	fprintf(stdout,"%d\tMapped\n", res.total_mapped);
 	fprintf(stdout,"%d\tUn-mapped\n", res.total_unmapped);
 
-	fprintf(stdout,"%f\tPercentage mapped\n", roundf((float)res.total_mapped / (float) res.total) * 100.0f);
-	fprintf(stdout,"%f\tPercentage mis-mapped\n", roundf((float)c  / (float) res.total) * 100.0f);
+	fprintf(stdout,"%f\tPercentage mapped\n", roundf((float)res.total_mapped / (float) res.total * 100.0f));
+	fprintf(stdout,"%f\tPercentage mis-mapped %d\n", roundf((float)sum  / (float) res.total * 10000.0f)/100.0f,sum);
 	
+	j = 0;
+	sum = 0;
 
+	for(i = 1; i < 6;i++){
+		//fprintf(stdout,"%d sum:%d\n",res.mismapped[i],c);
+		sum += res.mapped[i];
+		j += res.mismapped[i];
+	}
+	fprintf(stdout,"%d\tMapped\n", sum);
+	
+        fprintf(stdout,"%f\tPercentage mis-mapped %d\n", roundf((float)j  / (float) sum  * 10000.0f)/100.0f,j);
+	      
 	
 	for(i = 0; i < 6;i++){
 		fprintf(stdout,"%d\t",i*10);
 	}
-
 	fprintf(stdout,"mapping quality\n");
+
+	sum =0;
 	for(i = 0; i < 6;i++){
+		sum+= res.mapped[i];
 		fprintf(stdout,"%d\t",res.mapped[i]);
 		fprintf(fptr_out,"\t%d",res.mapped[i]);
 	}
 	fprintf(stdout,"correctly mapped\n");
 	for(i = 0; i < 6;i++){
+		sum += res.mismapped[i];
 		fprintf(stdout,"%d\t",res.mismapped[i]);
 		fprintf(fptr_out,"\t%d",res.mismapped[i]);
 	}
-	fprintf(stdout,"in-correctly mapped\n");
+	fprintf(stdout,"in-correctly mapped total:%d\n",sum);
 	for(i = 0; i < 6;i++){
 		if(res.mismapped[i] == 0){
 			fprintf(stdout,"100\t");
@@ -885,4 +944,11 @@ char** get_files_names(char* directory, char* suffix, int* num_files)
 	return list;
 ERROR:
 	return NULL;
+}
+
+
+
+static int str_cmp(const void * a, const void* b)
+{
+	return strcmp((const char*) a, (const char*)b);
 }

@@ -2,10 +2,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "tldevel.h"
 
 #include "delve_struct.h"
-
-#include "tldevel.h"
 
 char* glocal_viterbi_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
 {
@@ -344,7 +343,7 @@ ERROR:
 	return NULL;
 }
 
-struct hmm* glocal_forward_log_Y(struct hmm* hmm, char* a,  char* b, int n,int m,int frame )
+int glocal_forward_log_Y(struct hmm* hmm, char* a,  char* b, int n,int m,int frame )
 {
 	//init - terminal gap penalty = 0 (p = 1)
 	ASSERT(n > 10, "read too short ");
@@ -516,12 +515,12 @@ struct hmm* glocal_forward_log_Y(struct hmm* hmm, char* a,  char* b, int n,int m
 	Y[n][m] =                            prob[           (EGAP << 12) | (seqb[m-1] << 8) | (EGAP << 4) | seqb[m]] + Y[n][m-1];
 	
 	hmm->score =Y[n][m];
-	return hmm;
+	return OK;
 ERROR:
-	return NULL;
+	return FAIL;
 }
 
-struct hmm* glocal_backward_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
+int glocal_backward_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
 {
 	int i,j;//c;
 	
@@ -625,11 +624,11 @@ struct hmm* glocal_backward_log_Y(struct hmm* hmm,char* a, char* b, int n,int m)
 	X[0][0] = prob2scaledprob(0.0f);
 	Y[0][0] = prob[(EGAP << 12) | (seqb[1] << 8) |             (EGAP << 4) | seqb[2]] + Y[0][1];
 	
-	return hmm;
+	return OK;
 }
 
 
-struct hmm* get_prob_log_Y(struct hmm* hmm,char* a, char* b, int n,int m,float frac,int frame )
+int get_prob_log_Y(struct hmm* hmm,char* a, char* b, int n,int m,float frac,int frame )
 {
 	int i,j,g;
 	char* seqa = a -1;
@@ -806,7 +805,7 @@ struct hmm* get_prob_log_Y(struct hmm* hmm,char* a, char* b, int n,int m,float f
 		hmm->fY = Y;//hmm->tfY[frame];
 	}
 	
-	return hmm;
+	return OK;
 }
 
 

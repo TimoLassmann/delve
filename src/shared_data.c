@@ -48,7 +48,7 @@ struct shared_data* init_shared_data(struct parameters* param, int buffer_size)
 	bsd->num_maxhits = param->num_maxhits;
 	bsd->param = param;
 	bsd->num_threads = param->num_threads;
-
+	bsd->statmode = 0;
 	/* allocation  */
 	if((bsd->pool = thr_pool_create(bsd->num_threads+1, bsd->num_threads+1, 0, 0)) == NULL) ERROR_MSG("Creating pool thread failed.");
 	RUNP(bsd->gc = init_genome_sequences(bsd->buffer_size, bsd->num_maxhits));

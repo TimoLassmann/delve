@@ -3,11 +3,11 @@
 #define DELVE_STRUCT_H
 
 
-#define ALIGNMENT_FLANKING_LENGTH 10
+#define ALIGNMENT_FLANKING_LENGTH 5LL
 
 #define NCODE 4
-#define IGAP 13
-#define EGAP 14
+#define IGAP 5
+#define EGAP 6
 
 
 #include "htslib/faidx.h"
@@ -32,6 +32,7 @@ struct shared_data{
 	void (*free)(struct shared_data* bsd);
 	FILE* fptr_out;
 	float temperature;
+	int statmode; 
 	int iteration;
 	int buffer_size;
 	int num_threads;
@@ -42,10 +43,14 @@ struct shared_data{
 
 struct genome_sequences{
 	char** genomic_sequences;
-	float* alignment_weigth; 
+	float* alignment_weigth;
+	float* genome_seq_score;
+	float* prev_aln_prior;
 	float* prior;
 	float* prior_e;
 	int* g_len;
+	float read_score;
+	float prev_unaln_prior;
 };
 
 

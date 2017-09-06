@@ -25,18 +25,27 @@ struct genome_sequences** init_genome_sequences(int num, int num_maxhits)
 		gc[i]->genomic_sequences = NULL;
 		gc[i]->g_len = NULL;
 		gc[i]->alignment_weigth = NULL;
+		gc[i]->prev_aln_prior = NULL;
+		gc[i]->prev_unaln_prior = prob2scaledprob(1.0f);
 		gc[i]->prior = NULL;
 		gc[i]->prior_e = NULL;
-		
+		gc[i]->genome_seq_score = NULL;
+		gc[i]->read_score = 0.0f;
 		MMALLOC(gc[i]->g_len,sizeof(int) * num_maxhits);
 		MMALLOC(gc[i]->genomic_sequences,sizeof(char*) * num_maxhits);
 		MMALLOC(gc[i]->alignment_weigth,sizeof(float) * num_maxhits);
+
+		MMALLOC(gc[i]->prev_aln_prior,sizeof(float) * num_maxhits);
 		MMALLOC(gc[i]->prior,sizeof(float) * num_maxhits);
-		MMALLOC(gc[i]->prior_e,sizeof(float) * num_maxhits);
-		for (j = 0; j < num_maxhits; j++) {
+		MMALLOC(gc[i]->prior_e,sizeof(float) * num_maxhits);		
+		MMALLOC(gc[i]->genome_seq_score,sizeof(float) * num_maxhits);
+		
+		for (j = 0; j < num_maxhits;j++){
 			gc[i]->g_len[j] = 0;
 			gc[i]->genomic_sequences[j] = NULL;
 			gc[i]->alignment_weigth[j] = 0.0f;
+			gc[i]->genome_seq_score[j] = 0.0f;
+			gc[i]->prev_aln_prior[j] = prob2scaledprob(1.0f);
 			gc[i]->prior[j] = 0.0f;
 			gc[i]->prior_e[j] = 0.0f;
 		}
@@ -71,7 +80,7 @@ int add_genome_sequences(struct shared_data* bsd)
 			DPRINTF2("NEWHIT:");
 			DPRINTF2("%s: %d ->%d", sb_file->buffer[i]->name,sb_file->buffer[i]->start[j],sb_file->buffer[i]->stop[j] );
 			
-			RUN(get_chr_start_stop(sb_file->si  ,g_int,sb_file->buffer[i]->start[j], sb_file->buffer[i]->stop[j]));
+			RUN(get_chr_start_stop(sb_file->si,g_int,sb_file->buffer[i]->start[j], sb_file->buffer[i]->stop[j]));
 			g_int->start -=ALIGNMENT_FLANKING_LENGTH;
 			g_int->stop += ALIGNMENT_FLANKING_LENGTH;
 			DPRINTF2("%s:%d-%d ",g_int->chromosome,g_int->start,g_int->stop);
@@ -81,6 +90,20 @@ int add_genome_sequences(struct shared_data* bsd)
 			len = (int) strlen(gc[i]->genomic_sequences[j]);
 
 			gc[i]->g_len[j] = len;
+			if(len < 10){
+				for(j = 0; j < sb_file->buffer[i]->num_hits;j++){
+					fprintf(stdout,"NEWHIT:\n");
+					fprintf(stdout,"%s: %ld ->%ld\n", sb_file->buffer[i]->name,sb_file->buffer[i]->start[j],sb_file->buffer[i]->stop[j] );
+			
+					RUN(get_chr_start_stop(sb_file->si,g_int,sb_file->buffer[i]->start[j], sb_file->buffer[i]->stop[j]));
+					fprintf(stdout,"%s:%d-%d strand:%d\n",g_int->chromosome,g_int->start,g_int->stop ,g_int->strand);
+					g_int->start -=ALIGNMENT_FLANKING_LENGTH;
+					g_int->stop += ALIGNMENT_FLANKING_LENGTH;
+					fprintf(stdout,"%s:%d-%d strand:%d\n",g_int->chromosome,g_int->start,g_int->stop ,g_int->strand);
+				}				
+				fprintf(stdout,"read:%s\nhit:%d (%s:%d-%d)\n", sb_file->buffer[i]->name,j, g_int->chromosome,g_int->start, g_int->stop);
+				exit(0);
+			}
 			//DPRINTF2("%s	(len:%d)",sb_file->buffer[i]->genomic_sequences[j],sb_file->buffer[i]->g_len[j]);
 
 			RUN(ACGT_to_0123(gc[i]->genomic_sequences[j] ,&len));
@@ -134,8 +157,10 @@ void free_genome_sequences(struct genome_sequences** gc, int num,int num_maxhits
 					}
 				}
 				MFREE(gc[i]->alignment_weigth);
+				MFREE(gc[i]->prev_aln_prior);
 				MFREE(gc[i]->prior);
 				MFREE(gc[i]->prior_e);
+				MFREE(gc[i]->genome_seq_score);
 				MFREE(gc[i]->genomic_sequences);
 				MFREE(gc[i]->g_len);
 				MFREE(gc[i]);
@@ -157,9 +182,6 @@ int convert_buffer_ACGT_to_0123(struct sam_bam_file* sb_file)
 ERROR:
 	return FAIL;
 }
-
-
-
 
 int ACGT_to_0123(char* seq,int* len)
 {

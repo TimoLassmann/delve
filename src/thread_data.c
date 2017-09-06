@@ -44,7 +44,7 @@ int get_start_stop_for_threads(const int num_threads, const int num_seq, const i
 	int interval = 0;
 
 	if(num_threads > num_seq){
-		if(id > num_seq){
+		if(id >= num_seq){
 			*start = 0;
 			*stop = 0;
 		}else{

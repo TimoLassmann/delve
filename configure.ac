@@ -62,6 +62,31 @@ fi
 
 ac_configure_args="$ac_configure_args PACKAGE_VERSION=$PACKAGE_VERSION   PACKAGE_NAME=$PACKAGE_NAME"
 
+
+
+AC_ARG_ENABLE(valgrind-tests,
+    [--enable-valgrind-tests run self tests under valgrind],
+    opt_valgrind_tests="$enableval", opt_valgrind_tests="no")
+    
+
+OPTS="-q --trace-children=no --error-exitcode=1 --leak-check=yes"
+  # Run self-tests under valgrind?
+if test "$opt_valgrind_tests" = "yes"; then
+        AC_DEFINE(DEBUG,1,[Defines debugging .])   
+        CFLAGS="-pg -ggdb -pedantic -Wall -m64 -std=gnu11"
+	AC_CHECK_PROGS(VALGRIND, valgrind)
+	VALGRIND="$VALGRIND $OPTS"
+else
+	VALGRIND=
+fi
+AC_MSG_CHECKING([whether self tests are run under valgrind])
+AC_MSG_RESULT($opt_valgrind_tests)
+
+
+
+ac_configure_args="$ac_configure_args PACKAGE_VERSION=$PACKAGE_VERSION   PACKAGE_NAME=$PACKAGE_NAME"
+
+
 AC_CONFIG_FILES([Makefile
                  src/Makefile])
 		 

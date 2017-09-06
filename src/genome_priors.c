@@ -7,6 +7,26 @@
 
 #include "delve_struct.h"
 
+int reset_prev_aln_priors( struct shared_data* bsd)
+{
+	struct genome_sequences** gc = NULL;
+
+	int i,j;
+
+	gc = bsd->gc;
+
+	for(i = 0;i < bsd->buffer_size;i++){
+		for(j = 0; j < bsd->num_maxhits;j++){
+			gc[i]->prev_aln_prior[j] = prob2scaledprob(1.0);	
+		}
+		gc[i]->prev_unaln_prior =  prob2scaledprob(1.0);
+	}	
+	return OK;
+ERROR:
+	return FAIL;
+}
+
+
 
 int add_genome_pseudocounts(struct shared_data* bsd)
 {
@@ -65,6 +85,28 @@ ERROR:
 }	
 
 
+int set_uniform_genome_priors(struct shared_data* bsd)
+{
+	struct sam_bam_entry** buffer = NULL;	
+	struct genome_sequences** gc = NULL;
+	int num_seq; 	
+	int i,j;
+
+	ASSERT(bsd!= NULL,"No shared data!");
+	
+	num_seq = bsd->sb_file->num_read;
+	buffer = bsd->sb_file->buffer;
+ 	gc = bsd->gc;
+	for(i = 0; i < num_seq; i++) {
+	        for (j = 0; j < buffer[i]->num_hits ; j++) {
+			gc[i]->prior[j] = prob2scaledprob(1.0 / (float)  buffer[i]->num_hits);
+			gc[i]->prior_e[j] = prob2scaledprob(0.0f);			
+		}
+	}
+	return OK;
+ERROR:
+	return FAIL;
+}
 
 int copy_genome_priors_to_gc(struct shared_data* bsd)
 {
