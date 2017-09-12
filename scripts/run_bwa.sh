@@ -9,7 +9,7 @@ function run_aln () {
     printf "Processing %s (bwa)" $file;
     
 
-    $BWA_DIR aln -n 2 -t 96 $GENOME_DIR   $file  | bwa samse $GENOME_DIR   - $file  -n 50   | samtools sort -@ 8 -O bam -l 9 -T ~/tmp - >  $file.bwa.bam
+    $BWA_DIR aln -i0 -o2 -n 0.03 -l 1024 -t 16 $GENOME_DIR   $file  | bwa samse $GENOME_DIR   - $file  -n 50   | samtools sort -@ 16 -O bam  -T ~/tmp - >  $file.bwa.bam
 
     if [ "$?" -eq "0" ]
     then

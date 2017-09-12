@@ -8,9 +8,9 @@ struct hmm* init_hmm(int x, int y, int z)
 {
 	struct hmm* hmm = NULL;
 	int i,j,c;
-	int r1,r2,g1,g2,key;
+	int r1,r2,g2;
 	float* sum_prob = 0;
-	float sum;
+
 	x = x + 2;
 	y = y + 2;
 	
@@ -451,13 +451,6 @@ int entangle_hmms(struct shared_data* bsd)
 
 int add_pseudo_count(struct hmm* hmm, float total)
 {
-	int r1,g1,r2,g2,key;
-
-	int num_error_fields;
-	int num_non_error_fields;
-	float error_prob;
-	float non_error_prob;
-	float sum;
 	int i;
 
         float sum_pos2[256];
@@ -672,11 +665,12 @@ int add_pseudo_count(struct hmm* hmm, float total)
 int re_estimate(struct hmm* hmm)
 {
 
+	
 	float sum_pos1[256];
         int key_pos1;
 	int i;
 
-
+	ASSERT(hmm != NULL,"No hmm allocated?");
 	for(i = 0; i < 256;i++){
 		sum_pos1[i] = prob2scaledprob(0.0f);
 	}
@@ -931,8 +925,7 @@ int re_estimate(struct hmm* hmm)
 	//return hmm;
 	*/
 	return OK;
-ERROR:
-	
+ERROR:	
 	return FAIL;
 }
 
@@ -1207,6 +1200,7 @@ ERROR:
 int add_pseudo_count_random(struct hmm* hmm, float total)
 {
 	int j;
+	ASSERT(hmm != NULL,"No HMM allocated?");
 	for(j = 0; j < 25;j++){
         	hmm->random_read_model_t[j] = prob2scaledprob(total);
 		hmm->random_genome_model_t[j] = prob2scaledprob(total);

@@ -91,7 +91,7 @@ int main (int argc, char *argv[])
 	param->id = NULL;
 	param->num_infiles = 0;
 	param->num_threads = 4;
-	param->num_maxhits = 10;
+	param->num_maxhits = 20;
 	param->pseudocounts = 10;
 	param->genome_pseudocounts = 10;
 	param->nogp = 0;
@@ -203,7 +203,7 @@ int main (int argc, char *argv[])
 		param->num_infiles++;
 		c++;
 	}
-	
+
 	LOG_MSG("Starting run");
 	
 	if(!param->num_infiles){
@@ -356,7 +356,6 @@ int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct gen
 {
 	int i,j,len;
 	float sum;
-	float u_p; 
 	/* STEP 1: calculate the probability of sequences given the various models  */
 	for(i = 0; i < sam_entry->num_hits;i++){
 		len = gc->g_len[i];
@@ -450,7 +449,7 @@ int calculate_scores(struct hmm* hmm, struct sam_bam_entry* sam_entry,struct gen
 		gc->prev_aln_prior[i] = hmm->alignment_scores[i];
 	}
 	gc->prev_unaln_prior = hmm->unaligned_read_score;
- 
+	
 	if(!strcmp(sam_entry->name,"ORG8247_chr1_148556015_148556043_+_0")){
 		for(i = 0; i < sam_entry->num_hits;i++){
 			fprintf(stdout,"HIT:%d : %f\n",i,( hmm->alignment_scores[i]));
@@ -634,7 +633,7 @@ int run_estimate_sequence_model(struct shared_data* bsd)
 		if(bsd->statmode == STAT_IGNORE_UNALIGNED){
 			RUN(reset_prev_aln_priors(bsd));
 		}
-			       
+		
 		/* kick off jobs  */
 		for(i = 0; i < num_threads;i++){
 			if((status = thr_pool_queue(bsd->pool,do_baum_welch_thread,td[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
@@ -819,7 +818,7 @@ void* do_baum_welch_thread_random_model(void *threadarg)
        		for(hit = 0; hit < buffer[i]->num_hits;hit++){
 		        genomic_sequence = gc[i]->genomic_sequences[hit];//  data->sb_file->buffer[i]->genomic_sequences[hit];
 			len = gc[i]->g_len[hit];//  data->sb_file->buffer[i]->g_len[hit];
-			RUN(random_model_genome_score(hmm,genomic_sequence,len,prob2scaledprob(1.0)));
+			RUN(random_model_genome_score(hmm,genomic_sequence,len, gc[i]->alignment_weigth[hit]));//  prob2scaledprob(1.0)));
 			gc[i]->genome_seq_score[hit] = hmm->unaligned_genome_score;
 		}
 		RUN(random_model_read_score(hmm,buffer[i]->sequence,buffer[i]->len,prob2scaledprob(1.0)));
@@ -838,7 +837,6 @@ void* do_baum_welch_thread(void *threadarg)
 	struct hmm* hmm = NULL;
 	char* genomic_sequence = NULL;
 	float temperature = 1.0f;
-	float max,max2,sum;
 	int thread_id = -1;
 	int num_threads = 0;
 	int num_sequences = 0;
@@ -901,13 +899,13 @@ void* do_baum_welch_thread(void *threadarg)
 				//	RUN(random_model_genome_score(hmm,genomic_sequence,len,prob2scaledprob(1.0)));// -  scaledprob2prob (hmm->alignment_scores[c]))));//+ gc[i]->alignment_weigth[c]))));
 				// unaligned genome model update... 
 				gc[i]->prior_e[c] = logsum(gc[i]->prior_e[c], hmm->alignment_scores[c]);
-				if(i < 10){
-					fprintf(stderr,"%s:%d	%f	%f\n",buffer[i]->name,c,hmm->alignment_scores[c],scaledprob2prob(hmm->alignment_scores[c]) );
-				}
+				//if(i < 10){
+				//	fprintf(stderr,"%s:%d	%f	%f\n",buffer[i]->name,c,hmm->alignment_scores[c],scaledprob2prob(hmm->alignment_scores[c]) );
+				//}
 			}
-			if(i < 10){
-				fprintf(stderr,"%s:%s	%f	%f\n",buffer[i]->name,"NA",hmm->unaligned_read_score,scaledprob2prob(hmm->unaligned_read_score));
-			}
+			//if(i < 10){
+			//	fprintf(stderr,"%s:%s	%f	%f\n",buffer[i]->name,"NA",hmm->unaligned_read_score,scaledprob2prob(hmm->unaligned_read_score));
+			//}
 			//RUN(random_model_read_score(hmm, buffer[i]->sequence,buffer[i]->len,hmm->unaligned_read_score));
         		//unalign read model update... 
 		}

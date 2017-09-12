@@ -55,7 +55,7 @@ struct genome_sequences{
 
 
 struct delve_genome_region_data{
-	int32_t count;
+	float count;
 	float alignment_weigth; 
 	float prior;
 	float prior_e;

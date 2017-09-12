@@ -10,8 +10,9 @@
 int reset_prev_aln_priors( struct shared_data* bsd)
 {
 	struct genome_sequences** gc = NULL;
-
 	int i,j;
+
+	ASSERT(bsd != NULL,"No shared data found.");
 
 	gc = bsd->gc;
 

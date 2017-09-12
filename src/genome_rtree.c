@@ -36,7 +36,7 @@ struct rtr_data* build_rtree(struct sam_bam_file* sb_file )
 		for (i = 0; i < sb_file->num_read; i++) {
 			for (j=0; j < sb_file->buffer[i]->num_hits ; j++) {
 				MMALLOC(dgd,sizeof(struct delve_genome_region_data));
-				dgd->count = 1;
+				dgd->count = 1.0 / (float) sb_file->buffer[i]->num_hits;
 				dgd->alignment_weigth = 0.0f;
 				dgd->prior = prob2scaledprob(1.0f);
 				dgd->prior_e = prob2scaledprob(0.0f);
@@ -113,7 +113,11 @@ int set_sequence_weigth(struct shared_data* bsd)
 			RUNP(dgd = rtree->query(rtree,val));
 			//fprintf(stdout,"count retrieved = %d\n", dgd->count);
 			if(dgd->count >= 10){
-				weigth = 1.0f / log10((float) dgd->count); 
+				if(dgd->count >= 10000){
+					weigth = 1.0f / log10(10000.0); 
+				}else{
+					weigth = 1.0f / log10(dgd->count);
+				}
 			}else{
 				weigth = 1.0f;
 			}
