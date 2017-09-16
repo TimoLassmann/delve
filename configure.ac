@@ -5,6 +5,10 @@ AC_PROG_CC
 AC_PROG_INSTALL
 
 
+tldevel_check_f=$ac_abs_confdir/tldevel/README.md
+
+AC_CHECK_FILE([$tldevel_check_f], [], [AC_MSG_ERROR([Did you run 'git submodule init; git module update'?])])
+
 # Load tldevel if not there.. 
 if [[ ! -e tldevel/README.md ]]; then
     git submodule init
