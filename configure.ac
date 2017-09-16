@@ -7,13 +7,14 @@ AC_PROG_INSTALL
 
 tldevel_check_f=$ac_abs_confdir/tldevel/README.md
 
-AC_CHECK_FILE([$tldevel_check_f], [], [AC_MSG_ERROR([Did you run 'git submodule init; git module update'?])])
+AC_CHECK_FILE([$tldevel_check_f], [], [AC_MSG_ERROR([
+     Did you run:
+     git submodule init
+     git module update
 
-# Load tldevel if not there.. 
-if [[ ! -e tldevel/README.md ]]; then
-    git submodule init
-    git submodule update
-fi
+     ?
+     ])])
+
 # FIXME: Replace `main' with a function in `-lm':
 AC_CHECK_LIB([m], [log])
 # FIXME: Replace `main' with a function in `-lpthread':
