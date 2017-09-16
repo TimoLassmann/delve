@@ -4,6 +4,12 @@ AM_INIT_AUTOMAKE
 AC_PROG_CC
 AC_PROG_INSTALL
 
+
+# Load tldevel if not there.. 
+if [[ ! -e tldevel/README.md ]]; then
+    git submodule init
+    git submodule update
+fi
 # FIXME: Replace `main' with a function in `-lm':
 AC_CHECK_LIB([m], [log])
 # FIXME: Replace `main' with a function in `-lpthread':
