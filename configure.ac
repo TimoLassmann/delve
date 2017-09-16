@@ -27,7 +27,7 @@ fi
 
 AC_CHECK_HEADERS([stdlib.h string.h])
 
-LIB_TLDEVELDIR="libtldevel"
+LIB_TLDEVELDIR="tldevel"
 AC_SUBST(LIB_TLDEVELDIR)
 
 AC_TYPE_UINT8_T
@@ -90,6 +90,6 @@ ac_configure_args="$ac_configure_args PACKAGE_VERSION=$PACKAGE_VERSION   PACKAGE
 AC_CONFIG_FILES([Makefile
                  src/Makefile])
 		 
-AC_CONFIG_SUBDIRS([libtldevel])
+AC_CONFIG_SUBDIRS([tldevel])
 
 AC_OUTPUT

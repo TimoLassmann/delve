@@ -3,11 +3,11 @@
 
 LIB_TLDEVELDIR = @LIB_TLDEVELDIR@ 
 
-MYLIBDIRS = ../libtldevel/libhtsglue.a \
-	../libtldevel/librtree.a \
-	../libtldevel/libthrpool.a \
-	../libtldevel/libtldevel.a \
-	../libtldevel/libpwrite.a
+MYLIBDIRS = ../tldevel/libhtsglue.a \
+	../tldevel/librtree.a \
+	../tldevel/libthrpool.a \
+	../tldevel/libtldevel.a \
+	../tldevel/libpwrite.a
 
 MYINCDIRS = -I${top_builddir}/${LIB_TLDEVELDIR} \
             -I${top_srcdir}/${LIB_TLDEVELDIR}

@@ -4,7 +4,7 @@ LIB_TLDEVELDIR = @LIB_TLDEVELDIR@
 
 # top_builddir = @top_builddir@
 
-SUBDIRS = libtldevel src
+SUBDIRS = tldevel src
 
 clean:
 	rm -f TAGS

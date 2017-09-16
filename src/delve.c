@@ -792,6 +792,7 @@ void* do_baum_welch_thread_random_model(void *threadarg)
 	struct genome_sequences** gc = NULL;
 	struct sam_bam_entry** buffer = NULL;
 	struct hmm* hmm = NULL;
+	float max = 0;
 	int thread_id = -1;
 	int num_threads = 0;
 	int num_sequences = 0;
@@ -815,13 +816,17 @@ void* do_baum_welch_thread_random_model(void *threadarg)
 	char* genomic_sequence = NULL;
 	int len;
 	for(i = start; i < stop;i++){
+		max = prob2scaledprob(0.0);
        		for(hit = 0; hit < buffer[i]->num_hits;hit++){
 		        genomic_sequence = gc[i]->genomic_sequences[hit];//  data->sb_file->buffer[i]->genomic_sequences[hit];
 			len = gc[i]->g_len[hit];//  data->sb_file->buffer[i]->g_len[hit];
+			if(gc[i]->alignment_weigth[hit] > max){
+				max = gc[i]->alignment_weigth[hit];
+			}
 			RUN(random_model_genome_score(hmm,genomic_sequence,len, gc[i]->alignment_weigth[hit]));//  prob2scaledprob(1.0)));
 			gc[i]->genome_seq_score[hit] = hmm->unaligned_genome_score;
 		}
-		RUN(random_model_read_score(hmm,buffer[i]->sequence,buffer[i]->len,prob2scaledprob(1.0)));
+		RUN(random_model_read_score(hmm,buffer[i]->sequence,buffer[i]->len,max));// prob2scaledprob(1.0)));
 		gc[i]->read_score = hmm->unaligned_read_score;
 	}
 	return NULL;
