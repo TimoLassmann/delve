@@ -5,7 +5,7 @@ AC_PROG_CC
 AC_PROG_INSTALL
 
 
-tldevel_check_f=$ac_abs_confdir/tldevel/README.md
+tldevel_check_f=$ac_abs_confdir/tldevel/README
 
 AC_CHECK_FILE([$tldevel_check_f], [],[have_tldevel=no])
 
