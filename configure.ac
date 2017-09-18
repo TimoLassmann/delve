@@ -7,13 +7,15 @@ AC_PROG_INSTALL
 
 tldevel_check_f=$ac_abs_confdir/tldevel/README.md
 
-AC_CHECK_FILE([$tldevel_check_f], [],[have_tldevel=no]);
+AC_CHECK_FILE([$tldevel_check_f], [],[have_tldevel=no])
 
 
 if test "x${have_tldevel}" = xno; then
-   git submodule init;
-   git submodule update;
-   
+   echo "------------------------------------------"
+   echo " Unable to find pthreads on this system.  "
+   echo " Building a single-threaded version.      "
+   echo "------------------------------------------"
+   AC_MSG_ERROR([ASFSAF])
 fi
 
 
