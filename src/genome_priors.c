@@ -28,7 +28,6 @@ ERROR:
 }
 
 
-
 int add_genome_pseudocounts(struct shared_data* bsd)
 {
 	struct delve_genome_region_data* dgd = NULL;

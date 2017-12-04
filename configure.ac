@@ -20,8 +20,6 @@ fi
 
 
 
-
-
 # FIXME: Replace `main' with a function in `-lm':
 AC_CHECK_LIB([m], [log])
 # FIXME: Replace `main' with a function in `-lpthread':
