@@ -17,11 +17,16 @@ LIBS = -lm -lpthread -lhts
 
 AM_CPPFLAGS=${MYINCDIRS} 
 
-bin_PROGRAMS =  delve bedsim run_delve
+bin_PROGRAMS =  delve bedsim run_delve dseed
 
 run_delve_SOURCES = \
 run_delve.c
 run_delve_LDADD =  ${MYLIBDIRS}
+
+dseed_SOURCES = \
+seed.c
+dseed_LDADD =  ${MYLIBDIRS}
+
 
 
 bedsim_SOURCES = \
@@ -50,4 +55,3 @@ io.h \
 io.c
 
 delve_LDADD =  ${MYLIBDIRS}
-

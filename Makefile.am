@@ -5,12 +5,3 @@ LIB_TLDEVELDIR = @LIB_TLDEVELDIR@
 # top_builddir = @top_builddir@
 
 SUBDIRS = tldevel src
-
-clean:
-	rm -f TAGS
-
-TAGS:
-	etags -o TAGS -a ${srcdir}/src/*.c
-	etags -o TAGS -a ${srcdir}/src/*.h
-	etags -o TAGS -a ${srcdir}/libtldevel/*.h
-	etags -o TAGS -a ${srcdir}/libtldevel/*.c
