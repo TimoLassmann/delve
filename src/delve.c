@@ -219,11 +219,11 @@ int main (int argc, char *argv[])
 	
         param->genome = param->infiles[0];
         param->aln_infile = param->infiles[1];
-	
+        
         init_logsum();
 	
         RUN(run_delve(param));
-	
+                        
         if(param){
                 MFREE(param->infiles);
                 MFREE(param);
@@ -235,6 +235,7 @@ ERROR:
                 MFREE(param->infiles);
                 MFREE(param);
         }
+        
         return EXIT_FAILURE;
 }
 
@@ -298,7 +299,7 @@ int run_delve(struct parameters* param)
         RUN(add_genome_sequences(bsd));
         /* set weigth of allocated sequences */
         RUN(set_sequence_weigth(bsd));
-	
+        
         /* Estimate random models  */
         LOG_MSG("Estimating Random model (%d)",bsd->sb_file->num_read);
         RUN(run_estimate_random_models(bsd));

@@ -1,5 +1,7 @@
 #ifdef HAVE_CONFIG_H
+
 #include "config.h"
+
 #endif
 
 #include <stdlib.h>
@@ -22,6 +24,7 @@
 #define OPT_SEED_STEP 5
 #define OPT_NUMQUERY 6
 #define OPT_NTHREADS 7
+
 
 
 #define MAX_LOOP_SEARCH_DEPTH 2
@@ -99,6 +102,7 @@ struct qs_struct{
 struct seed_thread_data{
         struct qs_struct* qs;
         struct parameters* param;
+        struct genome* genome;
         long int len;
         long int total_len;
         unsigned char* chromsome;
@@ -110,6 +114,8 @@ struct seed_thread_data{
 
 int seed_controller(struct parameters* param);
 
+int run_search(struct parameters* param, struct qs_struct* qs, struct genome* genome);
+void* do_run_search(void *threadarg);
 struct qs_struct* init_query_structure(struct parameters* param);
 void free_query_structure(struct qs_struct * qs);
 
@@ -137,7 +143,7 @@ int main (int argc, char *argv[])
 {		
         struct parameters* param = NULL;
         int c;
-
+        
         tlog.echo_build_config();
 
         MMALLOC(param, sizeof(struct parameters));
@@ -149,7 +155,7 @@ int main (int argc, char *argv[])
         param->seed_step = 8;
         param->num_query = 1000000;
         param->num_threads = 8;
-        
+                
         while (1){	
                 static struct option long_options[] ={
                         {"in",required_argument,0,OPT_INPUT},
@@ -161,14 +167,12 @@ int main (int argc, char *argv[])
                         {"help",0,0,'h'},
                         {0, 0, 0, 0}
                 };
-		
                 int option_index = 0;
                 c = getopt_long_only (argc, argv,"h",long_options, &option_index);
 		
                 if (c == -1){
                         break;
                 }
-		
                 switch(c) {
                 case OPT_INPUT:
                         param->input = optarg;
@@ -235,7 +239,6 @@ int main (int argc, char *argv[])
         /*         RUN(print_help(argv)); */
         /*         ERROR_MSG("delve requires at least one input\n"); */
         /* } */
-	
         /* RUN(run_delve(param)); */
 	      RUN(seed_controller_thread(param));
         if(param){
@@ -244,6 +247,7 @@ int main (int argc, char *argv[])
                 }
                 MFREE(param);
         }
+       
         return EXIT_SUCCESS;
 ERROR:
         fprintf(stdout,"\n  Try run with  --help.\n\n");
@@ -254,6 +258,7 @@ ERROR:
                 MFREE(param);
         }
         return EXIT_FAILURE;
+       
 }
 
 int print_help(char **argv)
@@ -364,6 +369,128 @@ int seed_controller_thread(struct parameters* param)
         return OK;
 ERROR:
         return FAIL;
+}
+
+
+int run_search(struct parameters* param, struct qs_struct* qs, struct genome* genome)
+{
+        static int header = 1;
+        struct seed_thread_data** thread_data_array = NULL;
+
+        int i;
+        int status;
+        ASSERT(param != NULL,"No param.");
+        ASSERT(qs != NULL,"No param.");
+        ASSERT(genome != NULL,"No param.");
+        
+ MMALLOC(thread_data_array ,sizeof(struct seed_thread_data*)* param->num_threads);
+
+        for(i = 0;i < param->num_threads;i++){
+                thread_data_array[i] = NULL;
+                MMALLOC(thread_data_array[i],sizeof(struct seed_thread_data));                
+                thread_data_array[i]->param = param;
+                thread_data_array[i]->qs = qs;
+                thread_data_array[i]->genome = genome;
+                thread_data_array[i]->thread = i;
+                if((status = thr_pool_queue(param->pool,do_run_search,thread_data_array[i])) == -1) fprintf(stderr,"Adding job to queue failed.");	
+        }
+        thr_pool_wait(param->pool);
+
+        MFREE(thread_data_array); 
+        
+        return OK;
+ERROR:
+        return FAIL;
+}
+
+void* do_run_search(void *threadarg)
+{
+        struct seed_thread_data* data = NULL;
+        struct parameters* param =  NULL;
+        struct genome* genome = NULL;
+        struct qs_struct* qs = NULL;
+        int thread_id; 
+
+        ASSERT(threadarg != NULL,"No threadarg");
+        data = (struct seed_thread_data*) threadarg;
+
+        thread_id = data->thread;
+        genome = data->genome;
+        qs= data->qs;
+
+        unsigned char* t = NULL;// = data->chromsome;
+        long int n;//  data->len;
+        long int r = (long int) param->seed_len;
+        
+        	
+        int j;//,g;
+        int i;
+        uint8_t* target = 0;
+        struct seq_info* si = 0;
+        unsigned int key = 0;
+        unsigned int mask = 0;
+        int t_len = 0;
+        long int seed_offset = 0;
+        int strand = 0;
+        unsigned long int new = 0;
+        long int add = 0;
+	
+        int* index = qs->hash_index_t[thread_id];
+        int chr; 
+        for(chr = 0; chr <  genome->num_chr;chr++){
+                t = genome->chromosomes[chr]->seq;
+                n = genome->chromosomes[chr]->seq_len;
+                for(i = 0; i <  r;i++){
+                        mask = (mask << 2u) | 3u;
+                }
+                key = 0u;
+                for(i = 0; i <  r-1;i++){
+                        key = (key << 2u) | (t[i] & 0x3u);
+                }
+                for(i = r-1; i < n;i++){
+                        key = ((key << 2u) | (t[i]  & 0x3u)) & mask;
+                        if(key){
+                                //g = 0;
+                                for(j = index[key];j < index[key+1u];j++){
+                                        seed_offset = qs->hash_t[thread_id][j] & 0x7fu;
+				
+                                        si = qs->seq_info[ qs->hash_t[thread_id][j] >> 8u];
+
+                                        strand = qs->hash_t[thread_id][j] & 0x80u;
+                                        add = ( (long int)i + ((long int) si->len - seed_offset)  -r + 10l); /// should be 10 ??? 
+
+                                        target = t +add;  
+
+                                        t_len = si->len + 10;
+
+                                        if( add <= n && add > ((long int) (si->len + 20))){
+                                                if(!strand){
+                                                        if(si->last_f_test <= i){
+                                                                //fprintf(stderr,"ADD:%ld	LEN:%d\n",add,t_len);
+                                                                new = validate_bpm(target ,si->seq , t_len , si->len, add);
+							
+                                                                //new = validate_bpm_pre(target ,si->fB , t_len , si->len, offset+ add);
+							
+                                                                BinaryInsertionSortOne(si->match_units,LIST_STORE_SIZE ,new);
+                                                                si->last_f_test = i +  si->len  ;
+                                                        }
+                                                }else{
+                                                        if(si->last_r_test <= i){
+                                                                new = validate_bpm(target ,si->reverse_seq , t_len , si->len, add);
+                                                                //new = validate_bpm_pre(target ,si->rB , t_len , si->len, offset+ add);
+                                                                new |= 1ul ;
+                                                                BinaryInsertionSortOne(si->match_units,LIST_STORE_SIZE,new);
+                                                                si->last_r_test = i +   si->len ;
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                }
+        }
+        return NULL;
+ERROR:
+        return NULL;
 }
 
 
@@ -728,7 +855,6 @@ struct qs_struct* search_fasta_fastq_thread(struct qs_struct* qs,struct paramete
                         //set sequence length of previous read
 			
                         if(park_pos != -1){ // to avoid setting something before the first read was read
-				
 				
                                 interval =  (int)((double)qs->size /(double)param->num_threads);
 				
