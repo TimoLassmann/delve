@@ -303,7 +303,7 @@ int seed_controller_thread(struct parameters* param)
 
                 }
                 qs = make_hash_thread(qs,param->seed_len,param->seed_step,param->num_threads - 1, t*interval,qs->size);
-		
+                RUN(run_search(param, qs,genome));
                 //qs = search_fasta_fastq_thread(qs,param);
 		
                 for(t = 0;t < param->num_threads ;t++){
@@ -468,7 +468,7 @@ void* do_run_search(void *threadarg)
                                                         if(si->last_f_test <= i){
                                                                 //fprintf(stderr,"ADD:%ld	LEN:%d\n",add,t_len);
                                                                 new = validate_bpm(target ,si->seq , t_len , si->len, add);
-							
+                                                                new |= ((long int) chr  << 1UL); 
                                                                 //new = validate_bpm_pre(target ,si->fB , t_len , si->len, offset+ add);
 							
                                                                 BinaryInsertionSortOne(si->match_units,LIST_STORE_SIZE ,new);
@@ -477,7 +477,7 @@ void* do_run_search(void *threadarg)
                                                 }else{
                                                         if(si->last_r_test <= i){
                                                                 new = validate_bpm(target ,si->reverse_seq , t_len , si->len, add);
-                                                                //new = validate_bpm_pre(target ,si->rB , t_len , si->len, offset+ add);
+                                                                new |= ((long int) chr  << 1UL);
                                                                 new |= 1ul ;
                                                                 BinaryInsertionSortOne(si->match_units,LIST_STORE_SIZE,new);
                                                                 si->last_r_test = i +   si->len ;
@@ -1973,7 +1973,7 @@ unsigned long int validate_bpm(unsigned char* t,unsigned char* p,int n,int m,lon
                 }
                 t--;
         }
-        return (((unsigned long int) (m+1 -k)) << 56ul ) | ((unsigned long int)(( offset - c ) << 1ul));
+        return (((unsigned long int) (m+1 -k)) << 56ul ) | ((unsigned long int)(( offset - c ) << 11ul));
 }
 
 
