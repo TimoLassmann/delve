@@ -27,7 +27,7 @@
 
 
 
-#define MAX_LOOP_SEARCH_DEPTH 2
+#define MAX_LOOP_SEARCH_DEPTH 10 /*  */
 
 #define LIST_STORE_SIZE 10
 #define FILE_END 0xFFFFFFFFFFFFFFFFu
@@ -125,7 +125,7 @@ void reverse_complement(unsigned char* p,unsigned char* rc,int len);
 
 struct qs_struct* make_hash(struct qs_struct* qs,int r);
 struct qs_struct* search_hash(struct qs_struct* qs,unsigned char* t,int n, long int r,long int offset);
-void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,int size);
+void print_sam(struct seq_info* si, struct genome* genome,FILE* f_ptr);//  unsigned char** t_names, long int* lengths,int size);
 
 int seed_controller_thread(struct parameters* param);
 struct qs_struct* search_fasta_fastq_thread(struct qs_struct* qs,struct parameters* param);
@@ -294,23 +294,25 @@ int seed_controller_thread(struct parameters* param)
         qs->size = param->num_query;
         while(qs->size ==  param->num_query ){	
                 qs = read_fasta_fastq2(fastafile,qs,param);
-                fprintf(stderr,"%d read\n",qs->size);
-                //qs = make_B(qs,qs->size);
-                interval =  (int)((double)qs->size /(double)param->num_threads);
+                if(qs->size){
+                        LOG_MSG("%d read.",qs->size);
+                        //qs = make_B(qs,qs->size);
+                        interval =  (int)((double)qs->size /(double)param->num_threads);
 		
-                for(t = 0;t < param->num_threads - 1;t++) {
-                        qs = make_hash_thread(qs,param->seed_len,param->seed_step,t, t*interval,t*interval+interval);
+                        for(t = 0;t < param->num_threads - 1;t++) {
+                                qs = make_hash_thread(qs,param->seed_len,param->seed_step,t, t*interval,t*interval+interval);
 
+                        }
+                        qs = make_hash_thread(qs,param->seed_len,param->seed_step,param->num_threads - 1, t*interval,qs->size);
+                        RUN(run_search(param, qs,genome));
+                        //qs = search_fasta_fastq_thread(qs,param);
+                
+                        for(t = 0;t < param->num_threads ;t++){
+                                free(qs->hash_t[t]);
+                                free(qs->hash_index_t[t]);
+                        }
                 }
-                qs = make_hash_thread(qs,param->seed_len,param->seed_step,param->num_threads - 1, t*interval,qs->size);
-                RUN(run_search(param, qs,genome));
-                //qs = search_fasta_fastq_thread(qs,param);
-		
-                for(t = 0;t < param->num_threads ;t++){
-                        free(qs->hash_t[t]);
-                        free(qs->hash_index_t[t]);
-                }
-
+                
         }
 
 
@@ -375,15 +377,16 @@ ERROR:
 int run_search(struct parameters* param, struct qs_struct* qs, struct genome* genome)
 {
         static int header = 1;
+        FILE* f_ptr = NULL;
         struct seed_thread_data** thread_data_array = NULL;
 
-        int i;
+        int i,j;
         int status;
         ASSERT(param != NULL,"No param.");
         ASSERT(qs != NULL,"No param.");
         ASSERT(genome != NULL,"No param.");
         
- MMALLOC(thread_data_array ,sizeof(struct seed_thread_data*)* param->num_threads);
+        MMALLOC(thread_data_array ,sizeof(struct seed_thread_data*)* param->num_threads);
 
         for(i = 0;i < param->num_threads;i++){
                 thread_data_array[i] = NULL;
@@ -396,10 +399,50 @@ int run_search(struct parameters* param, struct qs_struct* qs, struct genome* ge
         }
         thr_pool_wait(param->pool);
 
+        
+        if(header){
+                RUNP(f_ptr = fopen(param->output, "w"));
+                fprintf(f_ptr, "@HD\tVN:1.0\n");
+		
+                for(i = 0; i < genome->num_chr ;i++){
+                        fprintf(f_ptr, "@SQ\tSN:%s\tLN:%u\n", genome->chromosomes[i]->name, (unsigned int) genome->chromosomes[i]->seq_len);
+                        
+                        //fprintf(stdout,"\n");
+                        
+                }
+                fprintf(f_ptr, "@PG\tID:Delve\tVN:%s\tCL:%s\n",VERSION,"dseed something") ;
+                header = 0;
+        }else{
+                RUNP(f_ptr = fopen(param->output, "a"));
+        }
+        
+        
+        //total_len +=  len;
+        for(i = 0; i < qs->size;i++){
+                print_sam(qs->seq_info[i], genome,f_ptr);//_names, lengths ,c);
+        }
+        fclose(f_ptr);
+	
+        //exit(0);
+        for(i = 0; i< qs->size;i++){
+                for(j = 0; j < LIST_STORE_SIZE;j++){
+                        qs->seq_info[i]->match_units[j] = 0ul;
+                }
+        }
+        //string_pos = 0;
+        qs->q_num = 0;
+
+        for (i = 0; i < param->num_threads; i++){
+                MFREE(thread_data_array[i]);
+        }
+                     
         MFREE(thread_data_array); 
         
         return OK;
 ERROR:
+        if(f_ptr){
+                fclose(f_ptr);
+        }
         return FAIL;
 }
 
@@ -413,7 +456,7 @@ void* do_run_search(void *threadarg)
 
         ASSERT(threadarg != NULL,"No threadarg");
         data = (struct seed_thread_data*) threadarg;
-
+        param = data->param;
         thread_id = data->thread;
         genome = data->genome;
         qs= data->qs;
@@ -437,9 +480,18 @@ void* do_run_search(void *threadarg)
 	
         int* index = qs->hash_index_t[thread_id];
         int chr; 
-        for(chr = 0; chr <  genome->num_chr;chr++){
+        for(chr = 0; chr <=  genome->num_chr;chr++){
+
+                LOG_MSG("Thread %d is working on %s.", thread_id, genome->chromosomes[chr]->name);
                 t = genome->chromosomes[chr]->seq;
                 n = genome->chromosomes[chr]->seq_len;
+
+                for(i = 0; i< qs->size;i++){
+                        qs->seq_info[i]->last_f_test = -1000;
+                        qs->seq_info[i]->last_r_test = -1000;
+                }
+                
+                mask = 0;
                 for(i = 0; i <  r;i++){
                         mask = (mask << 2u) | 3u;
                 }
@@ -449,6 +501,7 @@ void* do_run_search(void *threadarg)
                 }
                 for(i = r-1; i < n;i++){
                         key = ((key << 2u) | (t[i]  & 0x3u)) & mask;
+
                         if(key){
                                 //g = 0;
                                 for(j = index[key];j < index[key+1u];j++){
@@ -487,6 +540,7 @@ void* do_run_search(void *threadarg)
                                 }
                         }
                 }
+                LOG_MSG("Thread %d is done.",thread_id);
         }
         return NULL;
 ERROR:
@@ -730,6 +784,7 @@ void* search_hash_thread(void *threadarg)
         unsigned char* t = data->chromsome;
         long int n = data->len;
         long int r = (long int) param->seed_len;
+
         long int offset = data->total_len;
 	
         int thread = data->thread;
@@ -845,6 +900,7 @@ struct qs_struct* search_fasta_fastq_thread(struct qs_struct* qs,struct paramete
 	
         if (!(file = fopen(param->genome, "r" ))){
                 fprintf(stderr,"Cannot open query file '%s'\n", param->genome);
+
                 exit(-1);
         }
         c= -1;
@@ -1040,7 +1096,7 @@ struct qs_struct* search_fasta_fastq_thread(struct qs_struct* qs,struct paramete
 	
         //total_len +=  len;
         for(i = 0; i < qs->size;i++){
-                print_sam(qs->seq_info[i], chr_names, lengths ,c);
+//                print_sam(qs->seq_info[i], chr_names, lengths ,c);
         }
 	
         //exit(0);
@@ -1528,7 +1584,7 @@ struct qs_struct* search_fasta_fastq(struct qs_struct* qs,struct parameters* par
 	
         //fwrite(&param->upper_limit, sizeof(unsigned int),1,binfile);
         for(i = 0; i< qs->size;i++){
-                print_sam(qs->seq_info[i], chr_names, lengths ,c);
+//                print_sam(qs->seq_info[i], chr_names, lengths ,c);
         }
 	
         for(i = 0; i< qs->size;i++){
@@ -1550,7 +1606,7 @@ struct qs_struct* search_fasta_fastq(struct qs_struct* qs,struct parameters* par
         return qs;
 }
 
-void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,int size)
+void print_sam(struct seq_info* si, struct genome* genome,FILE* f_ptr)// char** t_names, long int* lengths,int size)
 {
         char alphabet[] = "ACGTN";
         char* pline = malloc(sizeof (char)* MAX_LINE*10);
@@ -1559,7 +1615,7 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
         int strand = 0;
         int no_qual = 0;
         int i,j;
-        unsigned char* t_name =  0;
+        char* t_name =  0;
         long int pos = 0;
         int matches = 0;
 	
@@ -1602,29 +1658,13 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
                         );
                 i = strlen(pline);
                 pline[i] = 0;
-                fprintf(stdout, "%s\n",pline);
+                fprintf(f_ptr, "%s\n",pline);
         }else{
-                pos =(long int) ((si->match_units[0] >> 1ul )& 0xFFFFFFFFul);
+                t_name = genome->chromosomes[(si->match_units[0] >> 1ul )& 0x3FF ]->name;
+                pos =(long int) ((si->match_units[0] >> 11ul )& 0xFFFFFFFFul);
                 matches = (int) (si->match_units[0] >> 56ul);
                 //fprintf(stderr,"printing:%lu	%ld\n",si->match_units[0],pos);
-                j = 0;
-                for(i = 0; i <= size;i++){
-                        if( pos < lengths[i]){
-                                t_name = t_names[i-1];
-                                pos = pos - lengths[i-1];
-                                j = i-1 + 1;
-                                break;
-                        }
-                }
-                if(!j){
-                        fprintf(stderr,"not found: %ld\n",pos);
-                        for(i = 0; i <= size;i++){
-                                fprintf(stderr,"%s	%ld	%s\n", t_names[i],lengths[i],si->sn);
-                        }
-                        exit(-1);
-                }
-                //fprintf(stderr,"NAME found : %d\n",j-1);
-		
+                		
                 if(!strand){
                         for(i = 0;i < si->len;i++){
                                 seq[i] = alphabet[si->seq[i]];
@@ -1638,13 +1678,13 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
                 seq[si->len] = 0;
                 //fprintf(stdout, "LINe:\n\n");
                 if(!strand){
-                        sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s",
+                        sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%dM\t%s\t%d\t%d\t%s\t%s",
                                 si->sn ,//1 QNAME Query NAME of the read or the read pair 
                                 strand,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.) 
                                 t_name,//3 RNAME Reference sequence NAME 
                                 (int)(pos+1l),//4 POS 1-based leftmost POSition of clipped alignment 
                                 255,//5 MAPQ MAPping Quality (Phred-scaled) 
-                                "*",//si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
+                                si->len,//si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
                                 "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME) 
                                 0,//8 MPOS 1-based leftmost Mate POSition 
                                 0,//9 ISIZE inferred Insert SIZE 
@@ -1653,13 +1693,13 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
                                 );
                 }else{
                         if(no_qual){
-                                sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s",
+                                sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%dM\t%s\t%d\t%d\t%s\t%s",
                                         si->sn ,//1 QNAME Query NAME of the read or the read pair 
                                         strand,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.) 
                                         t_name,//3 RNAME Reference sequence NAME 
                                         (int)(pos),//4 POS 1-based leftmost POSition of clipped alignment 
                                         255,//5 MAPQ MAPping Quality (Phred-scaled) 
-                                        "*",//si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
+                                        si->len,//si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
                                         "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME) 
                                         0,//8 MPOS 1-based leftmost Mate POSition 
                                         0,//9 ISIZE inferred Insert SIZE 
@@ -1667,13 +1707,13 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
                                         si->qual//11 QUAL query QUALity (ASCII-33=Phred base quality) 
                                         );
                         }else{
-                                sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%s",
+                                sprintf(pline,"%s\t%d\t%s\t%d\t%d\t%dM\t%s\t%d\t%d\t%s\t%s",
                                         si->sn ,//1 QNAME Query NAME of the read or the read pair 
                                         strand,//2 FLAG bitwise FLAG (pairing, strand, mate strand, etc.) 
                                         t_name,//3 RNAME Reference sequence NAME 
                                         (int)(pos),//4 POS 1-based leftmost POSition of clipped alignment 
                                         255,//5 MAPQ MAPping Quality (Phred-scaled) 
-                                        "*",//si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
+                                        si->len,//6 CIGAR extended CIGAR string (operations: MIDNSHP) 
                                         "*",//7 MRNM Mate Reference NaMe (‘=’ if same as RNAME) 
                                         0,//8 MPOS 1-based leftmost Mate POSition 
                                         0,//9 ISIZE inferred Insert SIZE 
@@ -1701,16 +1741,10 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
                                         break;
                                 }
                                 strand = si->match_units[j] & 1ul;
-                                pos = (unsigned int)  ((si->match_units[j] >> 1ul )& 0xFFFFFFFFul);
-                                for(i = 0; i <= size;i++){
-                                        //fprintf(stderr," looking at: %d	%d	%d	%s\n",i,pos,lengths[i],t_names[i]);
-                                        if( pos < lengths[i]){
-                                                t_name = t_names[i-1];
-                                                pos = pos - lengths[i-1];
-                                                break;
-                                        }
-                                }
-				
+                                t_name = genome->chromosomes[(si->match_units[j] >> 1ul )& 0x3FF ]->name;
+                                pos =(long int) ((si->match_units[j] >> 11ul )& 0xFFFFFFFFul);
+                                matches = (int) (si->match_units[j] >> 56ul);
+                 
                                 i = strlen(pline);
                                 if(!strand){
                                         sprintf(pline+i,"%s,+%d,%dM,%d;", t_name,(int)(pos+1l),si->len, si->len - (int)(si->match_units[j] >> 56ul));
@@ -1724,7 +1758,7 @@ void print_sam(struct seq_info* si, unsigned char** t_names, long int* lengths,i
 		
                 i = strlen(pline);
                 pline[i] = 0;
-                fprintf(stdout, "%s\n",pline);
+                fprintf(f_ptr, "%s\n",pline);
         }
         if(no_qual){
                 si->qual = 0;
@@ -2093,6 +2127,7 @@ unsigned char* reverse_without_complement(unsigned char* p,int len)
 }
 
 
+
 struct genome* load_genome(struct parameters* param)
 {
         struct genome* genome = NULL;
@@ -2128,11 +2163,19 @@ struct genome* load_genome(struct parameters* param)
                 //reading name .... 
                 if(line[0] == '>'){
                         line[strlen(line)-1] = 0;                       
+                        for(i =0 ; i<strlen(line);i++){
+                                if(isspace(line[i])){
+                                        line[i] = 0;
+                                                
+                                }
+                                        
+                        }
+
                         genome->num_chr++;
                         if(genome->num_chr){
                                 LOG_MSG("read %d bases.",chr->seq_len);                                        
                         }
-                        LOG_MSG("Reading in: %s",line);
+                        LOG_MSG("Reading in: %s",line+1);
                         if(genome->num_chr == genome->malloc_num){
                                 genome->malloc_num = genome->malloc_num << 1;
                                 MREALLOC(genome->chromosomes,sizeof(struct chromosome*) * genome->malloc_num);
@@ -2151,7 +2194,7 @@ struct genome* load_genome(struct parameters* param)
                                 
                         }
                         chr = genome->chromosomes[genome->num_chr];
-                        snprintf(chr->name,256,"%s",line);
+                        snprintf(chr->name,256,"%s",line+1);
                 }else{
                         for(i = 0;i < MAX_LINE;i++){
                                 if(iscntrl((int)line[i])){
